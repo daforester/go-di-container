@@ -397,7 +397,10 @@ func (A *App) MakeWith(a interface{}, injectables map[string]interface{}) interf
 	}
 
 	// Binding must exist if requesting interface or string
-	if t.Kind() == reflect.String || A.resolveTypePtr(t).Kind() == reflect.Interface {
+	if t.Kind() == reflect.String {
+		panic(fmt.Sprintf("no binding found for %s", a))
+	}
+	if A.resolveTypePtr(t).Kind() == reflect.Interface {
 		panic(fmt.Sprintf("no binding found for %s", t))
 	}
 
