@@ -13,6 +13,7 @@ const (
 	Ptr
 	Redirect
 	Struct
+	Primitive
 )
 
 type ObjectInterface interface {
@@ -81,12 +82,12 @@ func (o *Object) String() string {
 	return o.Name
 }
 
-func (O *Object) typeFullName(t reflect.Type) string {
-	pt := O.resolveTypePtr(t)
+func (o *Object) typeFullName(t reflect.Type) string {
+	pt := o.resolveTypePtr(t)
 	return pt.PkgPath() + "/" + t.String()
 }
 
-func (O *Object) resolveTypePtr(t reflect.Type) reflect.Type {
+func (o *Object) resolveTypePtr(t reflect.Type) reflect.Type {
 	for k := t.Kind(); k == reflect.Ptr; {
 		t = t.Elem()
 		k = t.Kind()

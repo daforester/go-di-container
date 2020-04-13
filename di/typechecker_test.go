@@ -56,7 +56,7 @@ func TestTypeChecker_IsTypeCompatible(t *testing.T) {
 	dType := reflect.TypeOf(t4)
 	eType := reflect.TypeOf(t5).Elem()
 
-	b = TypeChecker{}.IsTypeCompatible(reflect.TypeOf(int(5)), reflect.TypeOf(string("5")), false)
+	b = TypeChecker{}.IsTypeCompatible(reflect.TypeOf(5), reflect.TypeOf("5"), false)
 	if b {
 		t.Error(fmt.Sprintf("Expected false comparing int & string"))
 	}

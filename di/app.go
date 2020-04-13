@@ -7,42 +7,46 @@ import (
 )
 
 type AppInterface interface {
-	New(...AppConfig) AppInterface
-	Bind(interface{}, interface{}) AppInterface
-	Singleton(interface{}, ...interface{}) AppInterface
-	Make(interface{}) interface{}
-	MakeWith(interface{}, map[string]interface{}) interface{}
+	New(...AppConfig) AppInterface                            // Creates new DI App Instance
+	Bind(interface{}, interface{}) AppInterface               // Binds an implementation b to type a, b is always a new instance
+	Singleton(interface{}, ...interface{}) AppInterface       // Binds an existing instance b (or a if not specified) to type a
+	Make(interface{}) interface{}                             // Returns a new instance (or existing if singleton of specified type a)
+	MakeWith(interface{}, map[string]interface{}) interface{} // Returns a new instance (or existing if singleton of specified type a) but with specified injections in map
+	When(a interface{}) *whenLink                             // Sets up specific binding for a thing so that when a needs a b it gets c
 }
 
 type BindFunc func(*App) interface{}
 
 var (
-	defaultApp *App
-	instances    map[string]*App
+	defaultApp AppInterface
+	instances  map[string]AppInterface
 )
 
 type App struct {
 	objectBuilder  ObjectInterface
 	typeChecker    TypeCheckerInterface
-	registry       map[string]ObjectInterface
-	injectregistry map[string]map[string]ObjectInterface
+	registry       map[string]ObjectInterface            // Defined Bindings
+	injectRegistry map[string]map[string]ObjectInterface // Defined Injections for When
 }
 
 type AppConfig struct {
-	Name string
-	ObjectBuilder ObjectInterface
-	TypeChecker TypeCheckerInterface
-	Default bool
+	Name          string
+	ObjectBuilder ObjectInterface      // Allows for Mock Implementations
+	TypeChecker   TypeCheckerInterface // Allows for Mocked Implementations
+	Default       bool
 }
 
+// Create new App Container Instance with optional config
 func New(config ...AppConfig) *App {
 	return App{}.New(config...).(*App)
 }
 
-func Default(name ...string) *App {
+// Obtain default or named app instance
+func Default(name ...string) AppInterface {
 	if len(name) > 0 && len(name[0]) > 0 {
 		m := instances[name[0]]
 		if m == nil {
+			// Named instance not found so create it
 			instances[name[0]] = New(AppConfig{name[0], nil, nil, false})
 			return instances[name[0]]
 		}
@@ -51,6 +55,7 @@ func Default(name ...string) *App {
 	}
 
 	if defaultApp == nil {
+		// Default instance not found so create it
 		defaultApp = New(AppConfig{"", nil, nil, true})
 		return defaultApp
 	}
@@ -58,23 +63,24 @@ func Default(name ...string) *App {
 	return defaultApp
 }
 
-
+// Creates new app instance
 func (A App) New(config ...AppConfig) AppInterface {
 	a := new(App)
 	a.objectBuilder = new(Object)
 	a.typeChecker = new(TypeChecker)
 	a.registry = make(map[string]ObjectInterface)
-	a.injectregistry = make(map[string]map[string]ObjectInterface)
+	a.injectRegistry = make(map[string]map[string]ObjectInterface)
 
 	if defaultApp == nil {
 		defaultApp = a
 	}
 
+	// Process config options - allows providing mocked objectBuilder & typeChecker for example
 	if len(config) > 0 {
 		c := config[0]
 		if len(c.Name) > 0 {
 			if instances == nil {
-				instances = make(map[string]*App)
+				instances = make(map[string]AppInterface)
 			}
 
 			instances[c.Name] = a
@@ -94,6 +100,8 @@ func (A App) New(config ...AppConfig) AppInterface {
 }
 
 /*
+All the combinations of input that can be accepted
+
 Bind
 String, String - Alias
 Interface, String - Alias
@@ -119,6 +127,7 @@ Pointer, Func - Singleton
 Pointer - Singleton
 */
 
+// Binds type b to type a
 func (A *App) Bind(a interface{}, b interface{}) AppInterface {
 	var o ObjectInterface
 	var label string
@@ -136,9 +145,9 @@ func (A *App) Bind(a interface{}, b interface{}) AppInterface {
 		if a != nil {
 			aType = reflect.TypeOf(a)
 		}
-		if b != nil {
-			bType = reflect.TypeOf(b)
-		}
+
+		bType = reflect.TypeOf(b)
+
 		panic(fmt.Sprintf("Unsupported input, cannot bind %s to %s", bType, aType))
 	}
 
@@ -175,6 +184,7 @@ func (A *App) Bind(a interface{}, b interface{}) AppInterface {
 		panic(fmt.Sprintf("Unexpected error occurred, object not defined, inputs valid but didn't create object. Asked to bind %s to %s", bType, aType))
 	}
 
+	// Bind label to object
 	A.registry[label] = o
 
 	return A
@@ -250,6 +260,7 @@ func (A *App) validBindCombination(a interface{}, b interface{}) (result bool) {
 	return false
 }
 
+// Similar to Bind but ensures that existing instance is always used, c is optional
 func (A *App) Singleton(a interface{}, c ...interface{}) AppInterface {
 	var o ObjectInterface
 	var aType reflect.Type
@@ -269,7 +280,7 @@ func (A *App) Singleton(a interface{}, c ...interface{}) AppInterface {
 		if len(c) >= 1 {
 			bType = reflect.TypeOf(c[0])
 		}
-		panic(fmt.Sprintf("Unsupported input, cannot bind %s to %s", bType, aType))
+		panic(fmt.Sprintf("Unsupported input, cannot bind singleton %s to %s", bType, aType))
 	}
 
 	aType = reflect.TypeOf(a)
@@ -352,8 +363,8 @@ func (A *App) validSingletonCombination(a interface{}, c ...interface{}) (result
 	return false
 }
 
-func (A *App) When(a interface{}) *whenlink {
-	return &whenlink{
+func (A *App) When(a interface{}) *whenLink {
+	return &whenLink{
 		A,
 		a,
 	}
@@ -365,6 +376,7 @@ func (A *App) Make(a interface{}) interface{} {
 	return A.MakeWith(a, i)
 }
 
+// Make type A with optional injectables
 func (A *App) MakeWith(a interface{}, injectables map[string]interface{}) interface{} {
 	// Make with fields provided
 	var x *Object
@@ -425,6 +437,9 @@ func (A *App) processObject(x *Object, injectables map[string]interface{}) inter
 	} else if x.Kind == Ptr {
 		// Build the pointer automatically
 		return A.autogen(x.Value, injectables)
+	} else if x.Kind == Primitive {
+		// Primitive should return it's value
+		return x.Value
 	}
 
 	// Unknown type, shouldn't trigger
@@ -437,7 +452,8 @@ func (A *App) autogen(a interface{}, injectables map[string]interface{}) interfa
 
 	if e {
 		// A function called New is defined, use as a constructor
-		return A.makeByNew(a, injectables)
+		//return A.makeByNew(a, injectables) // Not yet supported
+		return A.makeByNew(a)
 	} else {
 		// No function exists, examine the tags
 		return A.makeByHints(a, injectables)
@@ -455,7 +471,8 @@ func (A *App) makeByHints(a interface{}, injectables map[string]interface{}) int
 
 	newobj := reflect.New(t)
 
-	hintmap, hasmap := A.injectregistry[A.typeFullName(reflect.TypeOf(a))]
+	// Use injection registry - if x needs y give z
+	hintmap, hasmap := A.injectRegistry[A.typeFullName(reflect.TypeOf(a))]
 
 	// Iterate over the fields of the struct
 	for fn := 0; fn < t.NumField(); fn++ {
@@ -523,16 +540,19 @@ func (A *App) makeByHints(a interface{}, injectables map[string]interface{}) int
 	return newobj.Interface()
 }
 
+/*
 func (A *App) makeByNew(a interface{}, injectables map[string]interface{}) interface{} {
 	// Injectables for function not yet supported
 	// Go does not provide names of parameters
 	// Solution to be decided upon
+*/
 
+func (A *App) makeByNew(a interface{}) interface{} {
 	t := reflect.TypeOf(a)
 	valIn := reflect.ValueOf(a)
 
 	// Obtain preset injection map for object
-	hintmap, hasmap := A.injectregistry[A.typeFullName(reflect.TypeOf(a))]
+	hintmap, hasmap := A.injectRegistry[A.typeFullName(reflect.TypeOf(a))]
 
 	method, _ := t.MethodByName("New")
 
@@ -630,14 +650,14 @@ func (A *App) setByTagValue(k reflect.Kind, f reflect.Value, v string) {
 		if err != nil {
 			panic(err)
 		}
-		f.Set(reflect.ValueOf(float64(iv)))
+		f.Set(reflect.ValueOf(iv))
 		return
 	case reflect.Int:
 		iv, err := strconv.Atoi(v)
 		if err != nil {
 			panic(err)
 		}
-		f.Set(reflect.ValueOf(int(iv)))
+		f.Set(reflect.ValueOf(iv))
 		return
 	case reflect.Int8:
 		iv, err := strconv.ParseInt(v, 10, 8)
@@ -665,7 +685,7 @@ func (A *App) setByTagValue(k reflect.Kind, f reflect.Value, v string) {
 		if err != nil {
 			panic(err)
 		}
-		f.Set(reflect.ValueOf(int64(iv)))
+		f.Set(reflect.ValueOf(iv))
 		return
 	case reflect.Uint:
 		iv, err := strconv.ParseUint(v, 10, 64)
@@ -700,7 +720,7 @@ func (A *App) setByTagValue(k reflect.Kind, f reflect.Value, v string) {
 		if err != nil {
 			panic(err)
 		}
-		f.Set(reflect.ValueOf(uint64(iv)))
+		f.Set(reflect.ValueOf(iv))
 		return
 	}
 

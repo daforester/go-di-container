@@ -34,7 +34,7 @@ type AppTestNewStruct struct {
 	B          string
 }
 
-func (a AppTestNewStruct) New(i AppTestInterface, d *AppTestStruct, e AppTestStruct) *AppTestNewStruct {
+func (a AppTestNewStruct) New(i AppTestInterface) *AppTestNewStruct {
 	return &AppTestNewStruct{
 		TestStruct: i,
 		A:          5,
@@ -48,7 +48,7 @@ type AppTestNewStructS struct {
 	B          string
 }
 
-func (a AppTestNewStructS) New(i AppTestInterface, d *AppTestStruct, e AppTestStruct) AppTestNewStructS {
+func (a AppTestNewStructS) New(i AppTestInterface) AppTestNewStructS {
 	return AppTestNewStructS{
 		TestStruct: i,
 		A:          55,
@@ -196,12 +196,12 @@ func TestNewApp(t *testing.T) {
 }
 
 func TestDefault(t *testing.T) {
-	a := Default("default")
+	a := Default("default").(*App)
 	if a.objectBuilder == nil {
 		t.Error("Default app we setup was not returned, but a new one instead")
 	}
 
-	a = Default()
+	a = Default().(*App)
 	if a.objectBuilder == nil {
 		t.Error("Default app we setup was not returned, but a new one instead")
 	}
@@ -518,29 +518,29 @@ func TestApp_Make(t *testing.T) {
 	if reflect.TypeOf(o) != reflect.TypeOf(&AppTestStruct{}) {
 		t.Error("App did not make an AppTestStruct")
 	}
-	o = app.Make((&AppTestStruct{}))
+	o = app.Make(&AppTestStruct{})
 	if reflect.TypeOf(o) != reflect.TypeOf(&AppTestStruct{}) {
 		t.Error("App did not make an AppTestStruct")
 	}
-	o = app.Make(("testalias"))
+	o = app.Make("testalias")
 	if reflect.TypeOf(o) != reflect.TypeOf(&AppTestStruct{}) {
 		t.Error("App did not make an AppTestStruct")
 	}
-	o = app.Make(("testfunc"))
+	o = app.Make("testfunc")
 	if reflect.TypeOf(o) != reflect.TypeOf(struct {
 		A int
 		B string
 	}{}) {
 		t.Error("App did not make an AppTestStruct")
 	}
-	o = app.Make(("teststruct"))
+	o = app.Make("teststruct")
 	if reflect.TypeOf(o) != reflect.TypeOf(struct {
 		A int
 		B string
 	}{}) {
 		t.Error("App did not make a Struct")
 	}
-	o = app.Make(("teststructptr"))
+	o = app.Make("teststructptr")
 	if reflect.TypeOf(o) != reflect.TypeOf(&struct {
 		A int
 		B string
