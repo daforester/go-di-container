@@ -24,7 +24,7 @@ type needLink struct {
 	need interface{}
 }
 
-func (n *needLink) Give(b interface{}) *App {
+func (n *needLink) Give(b interface{}) ObjectInterface {
 	A := n.a
 	w := n.when.when
 	a := n.need
@@ -34,8 +34,9 @@ func (n *needLink) Give(b interface{}) *App {
 
 	if b == nil {
 		// Unset binding
+		object := A.injectRegistry[A.typeFullName(reflectW)][A.typeFullName(reflectA)]
 		delete(A.injectRegistry[A.typeFullName(reflectW)], A.typeFullName(reflectA))
-		return A
+		return object
 	}
 
 	if !A.validBindCombination(a, b) && !A.validSingletonCombination(a, b) {
@@ -46,12 +47,15 @@ func (n *needLink) Give(b interface{}) *App {
 		A.injectRegistry[A.typeFullName(reflectW)] = make(map[string]ObjectInterface)
 	}
 
+	var object ObjectInterface
 	if A.typeFullName(reflectA)[0] == '/' && A.typeFullName(reflectA) == A.typeFullName(reflect.TypeOf(b)) {
 		// If a primitive is expected, then inject a primitive
-		A.injectRegistry[A.typeFullName(reflectW)][A.typeFullName(reflectA)] = A.objectBuilder.New(b, Primitive)
+		object = A.objectBuilder.New(b, Primitive)
 	} else {
-		A.injectRegistry[A.typeFullName(reflectW)][A.typeFullName(reflectA)] = A.objectBuilder.New(b)
+		object = A.objectBuilder.New(b)
 	}
 
-	return A
+	A.injectRegistry[A.typeFullName(reflectW)][A.typeFullName(reflectA)] = object
+
+	return object
 }

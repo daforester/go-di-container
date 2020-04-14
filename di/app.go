@@ -359,6 +359,9 @@ func (A *App) validSingletonCombination(a interface{}, c ...interface{}) (result
 			return true
 		}
 	}
+	if aType.Kind() == reflect.Ptr && bType.Kind() == reflect.Ptr && A.typeFullName(aType) == A.typeFullName(bType) {
+		return true
+	}
 
 	return false
 }
