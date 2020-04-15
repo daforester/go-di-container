@@ -303,6 +303,8 @@ func (A *App) Singleton(a interface{}, c ...interface{}) AppInterface {
 		if bType.Kind() == reflect.Func {
 			bf := A.interfaceToBindFunc(b)
 			b = bf(A)
+		} else if reflect.ValueOf(c[0]).IsNil() {
+			b = A.Make(c[0])
 		}
 
 		o = A.objectBuilder.New(b)
@@ -557,6 +559,19 @@ func (A *App) makeByNew(a interface{}) interface{} {
 	t := reflect.TypeOf(a)
 	valIn := reflect.ValueOf(a)
 
+	if t.Kind() == reflect.Ptr && valIn.IsNil() {
+		ct := t
+
+		for k := ct.Kind(); k == reflect.Ptr; {
+			ct = ct.Elem()
+			k = ct.Kind()
+		}
+
+		newobj := reflect.New(ct)
+		a = newobj.Interface()
+		valIn = reflect.ValueOf(a)
+	}
+
 	// Obtain preset injection map for object
 	hintmap, hasmap := A.injectRegistry[A.typeFullName(reflect.TypeOf(a))]
 
@@ -609,6 +624,7 @@ func (A *App) makeByNew(a interface{}) interface{} {
 	}
 
 	y := method.Func.Call(injects)
+
 	if len(y) == 0 {
 		panic(fmt.Sprintf("Failed creating new %s", t))
 	}
