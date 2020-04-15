@@ -472,11 +472,13 @@ func (A *App) makeByHints(a interface{}, injectables map[string]interface{}) int
 	t := reflect.TypeOf(a)
 	ot := t
 
+	// Resolve the object type to actual thing the pointer points to
 	for k := t.Kind(); k == reflect.Ptr; {
 		t = t.Elem()
 		k = t.Kind()
 	}
 
+	// Create a new instance of object to work with
 	newobj := reflect.New(t)
 
 	// Use injection registry - if x needs y give z
@@ -559,6 +561,7 @@ func (A *App) makeByNew(a interface{}) interface{} {
 	t := reflect.TypeOf(a)
 	valIn := reflect.ValueOf(a)
 
+	// We can't call "New" on a nil ptr object so create a new intance of type to work with
 	if t.Kind() == reflect.Ptr && valIn.IsNil() {
 		ct := t
 
