@@ -445,9 +445,6 @@ func (A *App) processObject(x *Object, injectables map[string]interface{}) inter
 	} else if x.Kind == Ptr {
 		// Build the pointer automatically
 		return A.autogen(x.Value, injectables)
-	} else if x.Kind == Primitive {
-		// Primitive should return it's value
-		return x.Value
 	}
 
 	// Unknown type, shouldn't trigger
@@ -589,6 +586,8 @@ func (A *App) makeByNew(a interface{}) interface{} {
 		childType := method.Type.In(v)
 
 		var pPtr reflect.Value
+
+		fmt.Println(childType.Kind())
 
 		if childType.Kind() == reflect.Ptr {
 			pPtr = reflect.New(childType.Elem())

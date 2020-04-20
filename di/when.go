@@ -48,12 +48,8 @@ func (n *needLink) Give(b interface{}) ObjectInterface {
 	}
 
 	var object ObjectInterface
-	if A.typeFullName(reflectA)[0] == '/' && A.typeFullName(reflectA) == A.typeFullName(reflect.TypeOf(b)) {
-		// If a primitive is expected, then inject a primitive
-		object = A.objectBuilder.New(b, Primitive)
-	} else {
-		object = A.objectBuilder.New(b)
-	}
+
+	object = A.objectBuilder.New(b)
 
 	A.injectRegistry[A.typeFullName(reflectW)][A.typeFullName(reflectA)] = object
 

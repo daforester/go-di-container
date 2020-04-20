@@ -11,6 +11,10 @@ type AppTestInterface interface {
 	IsAppTestInterface() bool
 }
 
+type AppTestNoBind interface{}
+
+type AppTestNoBindStruct struct{}
+
 type AppTestStruct struct {
 	A int
 	B string
@@ -53,6 +57,20 @@ func (a AppTestNewStructS) New(i AppTestInterface) AppTestNewStructS {
 		TestStruct: i,
 		A:          55,
 		B:          "strings",
+	}
+}
+
+type AppTestNewPointers struct {
+	appTestNewStructS *AppTestNewStructS
+	appTestStruct *AppTestStruct
+	appTestNoBindStruct *AppTestNoBindStruct
+}
+
+func (a AppTestNewPointers) New(appTestNewStructS *AppTestNewStructS, appTestStruct *AppTestStruct, appTestNoBindStruct AppTestNoBindStruct) *AppTestNewPointers {
+	return &AppTestNewPointers{
+		appTestNewStructS: appTestNewStructS,
+		appTestStruct: appTestStruct,
+		appTestNoBindStruct: &appTestNoBindStruct,
 	}
 }
 
@@ -260,6 +278,21 @@ func TestApp_Bind(t *testing.T) {
 	})
 
 	app.Bind("deletebindtest", &AppTestStruct{})
+
+	app.When((*AppTestNewPointers)(nil)).Needs((*AppTestStruct)(nil)).Give(&AppTestStruct{
+		789,
+		"Instance",
+	}).Singleton()
+}
+
+func TestApp_NoBind_ShouldFail(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Expected panic in response to Make with no binding")
+		}
+	}()
+
+	app.Make((*AppTestNoBind)(nil))
 }
 
 func TestApp_Bind_NillInputFail(t *testing.T) {
@@ -357,6 +390,10 @@ func TestApp_Singleton(t *testing.T) {
 	var bf BindFunc = func(a *App) interface{} {
 		return &AppTestStruct{}
 	}
+
+	app.Singleton((*AppTestInterface)(nil), (*AppTestStruct)(nil))
+	app.Singleton(&AppTestStruct{}, &AppTestStruct{})
+
 	app.Singleton(&AppTestStruct{}, bf)
 	app.Singleton((*AppTestInterface)(nil), bf)
 	app.Singleton((*AppTestInterface)(nil), &AppTestStruct{})
@@ -584,10 +621,24 @@ func TestApp_Make(t *testing.T) {
 		t.Error("App returned correct type but not created by New")
 	}
 
+	o = app.Make((*AppTestNewStruct)(nil))
+	if reflect.TypeOf(o) != reflect.TypeOf(&AppTestNewStruct{}) {
+		t.Error("App did not make an *AppTestNewStructS from a nil pointer")
+	}
+	if o.(*AppTestNewStruct).A != 5 || o.(*AppTestNewStruct).B != "string" {
+		t.Error("App returned correct type but not created by New")
+	}
+
+	o = app.Make((*AppTestNewPointers)(nil))
+	if reflect.TypeOf(o) != reflect.TypeOf(&AppTestNewPointers{}) {
+		t.Error("App did not make an *AppTestNewPointers from a nil pointer")
+	}
+
 	o = app.Make(AppTestTypeInjects{})
 	if reflect.TypeOf(o) != reflect.TypeOf(AppTestTypeInjects{}) {
 		t.Error("App did not make an *AppTestTypeInjects")
 	}
+
 	ov := o.(AppTestTypeInjects)
 	if ov.B != true {
 		t.Error("Bool should be set to true")
@@ -958,7 +1009,6 @@ func TestApp_When(t *testing.T) {
 	if o.(*AppTestInjectStruct).TestStruct.(*AppTestStruct).A != 2002 || o.(*AppTestInjectStruct).TestStruct.(*AppTestStruct).B != "stringCCC" {
 		t.Error("Object field values not set")
 	}
-
 }
 
 func TestApp_When_BindFail(t *testing.T) {
