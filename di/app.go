@@ -587,8 +587,6 @@ func (A *App) makeByNew(a interface{}) interface{} {
 
 		var pPtr reflect.Value
 
-		fmt.Println(childType.Kind())
-
 		if childType.Kind() == reflect.Ptr {
 			pPtr = reflect.New(childType.Elem())
 		} else {
