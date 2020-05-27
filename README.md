@@ -7,7 +7,7 @@
 Go-Di-Container is a go library for providing Dependency Injection IoC.
 
 ##### Latest Version
-v1.0.1
+v1.0.2
 
 ## Features
 
