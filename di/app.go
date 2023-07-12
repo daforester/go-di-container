@@ -292,6 +292,10 @@ func (A *App) Singleton(a interface{}, c ...interface{}) AppInterface {
 			panic(fmt.Sprintf("Unsupported input to singleton %s", aType))
 		}
 
+		if reflect.ValueOf(a).IsNil() {
+			a = A.Make(a)
+		}
+
 		o = A.objectBuilder.New(a)
 	} else if len(c) > 1 {
 		panic("Too many parameters passed to singleton expected 1 or 2")
