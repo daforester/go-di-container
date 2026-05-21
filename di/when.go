@@ -5,11 +5,14 @@ import (
 	"reflect"
 )
 
+// whenLink is the first step of a contextual binding chain:
+// app.When(&RequestingType{}).Needs((*Dependency)(nil)).Give(&Impl{})
 type whenLink struct {
 	a    *App
 	when interface{}
 }
 
+// Needs specifies which dependency type to override for the requesting type.
 func (w *whenLink) Needs(a interface{}) *needLink {
 	return &needLink{
 		w.a,
@@ -18,24 +21,38 @@ func (w *whenLink) Needs(a interface{}) *needLink {
 	}
 }
 
+// needLink is the second step of a contextual binding chain.
 type needLink struct {
 	a    *App
 	when *whenLink
 	need interface{}
 }
 
+// Give completes the contextual binding: when the requesting type needs the
+// dependency, give it b instead of the default binding. Pass nil to remove.
 func (n *needLink) Give(b interface{}) ObjectInterface {
 	A := n.a
+	A.lock()
+	defer A.unlock()
+
 	w := n.when.when
 	a := n.need
 
+	if w == nil {
+		panic("When() requires a non-nil requesting type")
+	}
+	if a == nil {
+		panic("Needs() requires a non-nil dependency type")
+	}
+
 	reflectW := reflect.TypeOf(w)
 	reflectA := reflect.TypeOf(a)
+	wKey := A.typeFullName(reflectW)
+	aKey := A.typeFullName(reflectA)
 
 	if b == nil {
-		// Unset binding
-		object := A.injectRegistry[A.typeFullName(reflectW)][A.typeFullName(reflectA)]
-		delete(A.injectRegistry[A.typeFullName(reflectW)], A.typeFullName(reflectA))
+		object := A.injectRegistry[wKey][aKey]
+		delete(A.injectRegistry[wKey], aKey)
 		return object
 	}
 
@@ -43,15 +60,13 @@ func (n *needLink) Give(b interface{}) ObjectInterface {
 		panic(fmt.Sprintf("Can not assign %s to %s for %s", reflect.TypeOf(b), reflectA, reflectW))
 	}
 
-	if A.injectRegistry[A.typeFullName(reflectW)] == nil {
-		A.injectRegistry[A.typeFullName(reflectW)] = make(map[string]ObjectInterface)
+	if A.injectRegistry[wKey] == nil {
+		A.injectRegistry[wKey] = make(map[string]ObjectInterface)
 	}
 
-	var object ObjectInterface
+	object := A.objectBuilder.New(b)
 
-	object = A.objectBuilder.New(b)
-
-	A.injectRegistry[A.typeFullName(reflectW)][A.typeFullName(reflectA)] = object
+	A.injectRegistry[wKey][aKey] = object
 
 	return object
 }

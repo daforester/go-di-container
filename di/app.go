@@ -1,76 +1,155 @@
+// Package di provides a dependency injection / Inversion of Control (IoC)
+// container for Go. It uses reflection to resolve dependencies via struct
+// tags, constructor methods, and explicit bindings.
+//
+// All public methods on App are safe for concurrent use from multiple goroutines.
+// Errors are reported via panic, not returned errors.
 package di
 
 import (
 	"fmt"
 	"reflect"
+	"runtime"
 	"strconv"
+	"sync"
+	"sync/atomic"
 )
 
+// AppInterface defines the public contract for a DI container.
 type AppInterface interface {
-	New(...AppConfig) AppInterface                            // Creates new DI App Instance
-	Bind(interface{}, interface{}) AppInterface               // Binds an implementation b to type a, b is always a new instance
-	Singleton(interface{}, ...interface{}) AppInterface       // Binds an existing instance b (or a if not specified) to type a
-	Make(interface{}) interface{}                             // Returns a new instance (or existing if singleton of specified type a)
-	MakeWith(interface{}, map[string]interface{}) interface{} // Returns a new instance (or existing if singleton of specified type a) but with specified injections in map
-	When(a interface{}) *whenLink                             // Sets up specific binding for a thing so that when a needs a b it gets c
+	New(...AppConfig) AppInterface
+	Bind(interface{}, interface{}) AppInterface
+	Singleton(interface{}, ...interface{}) AppInterface
+	Make(interface{}) interface{}
+	MakeWith(interface{}, map[string]interface{}) interface{}
+	When(a interface{}) *whenLink
 }
 
+// BindFunc is a factory function that receives the container and returns
+// an instance. Used with Bind and Singleton to construct dependencies.
 type BindFunc func(*App) interface{}
 
+// Package-level globals for the default and named container instances.
 var (
 	defaultApp AppInterface
 	instances  map[string]AppInterface
+	mu         sync.RWMutex
 )
 
+// App is the main DI container. It holds a binding registry, a contextual
+// injection registry (When/Needs/Give), and uses a reentrant mutex so
+// that BindFunc callbacks can safely call Make on the same container.
 type App struct {
 	objectBuilder  ObjectInterface
 	typeChecker    TypeCheckerInterface
-	registry       map[string]ObjectInterface            // Defined Bindings
-	injectRegistry map[string]map[string]ObjectInterface // Defined Injections for When
+	registry       map[string]ObjectInterface
+	injectRegistry map[string]map[string]ObjectInterface
+	resolving      map[string]bool // circular dependency detection during resolution
+	appMu          sync.Mutex
+	lockOwner      int64 // goroutine ID of current lock holder (atomic)
+	lockDepth      int32 // reentrant lock depth
 }
 
+// AppConfig provides options when creating a new container via New().
 type AppConfig struct {
 	Name          string
-	ObjectBuilder ObjectInterface      // Allows for Mock Implementations
-	TypeChecker   TypeCheckerInterface // Allows for Mocked Implementations
+	ObjectBuilder ObjectInterface      // override for testing
+	TypeChecker   TypeCheckerInterface // override for testing
 	Default       bool
 }
 
-// Create new App Container Instance with optional config
-func New(config ...AppConfig) *App {
-	return App{}.New(config...).(*App)
+// goroutineID extracts the current goroutine's ID from runtime.Stack output.
+func goroutineID() int64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	var id int64
+	for i := len("goroutine "); i < n && buf[i] != ' '; i++ {
+		id = id*10 + int64(buf[i]-'0')
+	}
+	return id
 }
 
-// Obtain default or named app instance
+// lock acquires the container mutex. Reentrant: if the same goroutine already
+// holds it (e.g. a BindFunc calling Make), the depth counter increments instead
+// of deadlocking.
+func (A *App) lock() {
+	gid := goroutineID()
+	if atomic.LoadInt64(&A.lockOwner) == gid {
+		A.lockDepth++
+		return
+	}
+	A.appMu.Lock()
+	atomic.StoreInt64(&A.lockOwner, gid)
+	A.lockDepth = 1
+}
+
+func (A *App) unlock() {
+	A.lockDepth--
+	if A.lockDepth == 0 {
+		atomic.StoreInt64(&A.lockOwner, 0)
+		A.appMu.Unlock()
+	}
+}
+
+// New creates a new App container instance with optional config.
+func New(config ...AppConfig) *App {
+	return (&App{}).New(config...).(*App)
+}
+
+// Default returns the default or a named app instance, creating one if it doesn't exist.
 func Default(name ...string) AppInterface {
 	if len(name) > 0 && len(name[0]) > 0 {
+		mu.RLock()
 		m := instances[name[0]]
+		mu.RUnlock()
 		if m == nil {
-			// Named instance not found so create it
-			instances[name[0]] = New(AppConfig{name[0], nil, nil, false})
+			mu.Lock()
+			defer mu.Unlock()
+			if instances[name[0]] != nil {
+				return instances[name[0]]
+			}
+			if instances == nil {
+				instances = make(map[string]AppInterface)
+			}
+			instances[name[0]] = newAppInstance()
 			return instances[name[0]]
 		}
 
 		return m
 	}
 
-	if defaultApp == nil {
-		// Default instance not found so create it
-		defaultApp = New(AppConfig{"", nil, nil, true})
+	mu.RLock()
+	if defaultApp != nil {
+		a := defaultApp
+		mu.RUnlock()
+		return a
+	}
+	mu.RUnlock()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if defaultApp != nil {
 		return defaultApp
 	}
-
+	defaultApp = newAppInstance()
 	return defaultApp
 }
 
-// Creates new app instance
-func (A App) New(config ...AppConfig) AppInterface {
+func newAppInstance() *App {
 	a := new(App)
 	a.objectBuilder = new(Object)
 	a.typeChecker = new(TypeChecker)
 	a.registry = make(map[string]ObjectInterface)
 	a.injectRegistry = make(map[string]map[string]ObjectInterface)
+	a.resolving = make(map[string]bool)
+	return a
+}
 
+// New creates a new container instance, optionally configured via AppConfig.
+func (A *App) New(config ...AppConfig) AppInterface {
+	a := newAppInstance()
+
+	mu.Lock()
 	if defaultApp == nil {
 		defaultApp = a
 	}
@@ -95,6 +174,7 @@ func (A App) New(config ...AppConfig) AppInterface {
 			a.typeChecker = c.TypeChecker
 		}
 	}
+	mu.Unlock()
 
 	return a
 }
@@ -112,6 +192,7 @@ String, Struct
 String, Pointer
 String, Func
 String, Interface
+String, Primitive (int, bool, float, etc.)
 
 Interface, Struct
 Interface, Pointer
@@ -124,11 +205,15 @@ Singleton
 Interface, Pointer - Singleton
 Interface, Func - Singleton
 Pointer, Func - Singleton
+Pointer, Pointer - Singleton (same type)
 Pointer - Singleton
 */
 
-// Binds type b to type a
+// Bind registers implementation b for type a. Pass nil as b to remove a binding.
 func (A *App) Bind(a interface{}, b interface{}) AppInterface {
+	A.lock()
+	defer A.unlock()
+
 	var o ObjectInterface
 	var label string
 	var aType reflect.Type
@@ -235,8 +320,7 @@ func (A *App) validBindCombination(a interface{}, b interface{}) (result bool) {
 	if realAType.Kind() == reflect.Interface {
 		if bType.Kind() == reflect.Func {
 			// Interface binding to Func, must be a BindFunc and return a compatible type with a
-			bf := A.interfaceToBindFunc(b)
-			if v, _, _ := A.isFuncReturnCompatible(bf, realAType); v {
+			if A.isFuncSignatureCompatible(b, realAType) {
 				return true
 			}
 		}
@@ -251,8 +335,7 @@ func (A *App) validBindCombination(a interface{}, b interface{}) (result bool) {
 	}
 	if (aType.Kind() == reflect.Ptr || aType.Kind() == reflect.Struct) && bType.Kind() == reflect.Func {
 		// Bind Ptr & Struct to a BindFunc to run as a constructor
-		bf := A.interfaceToBindFunc(b)
-		if v, _, _ := A.isFuncReturnCompatible(bf, aType); v {
+		if A.isFuncSignatureCompatible(b, aType) {
 			return true
 		}
 	}
@@ -260,8 +343,11 @@ func (A *App) validBindCombination(a interface{}, b interface{}) (result bool) {
 	return false
 }
 
-// Similar to Bind but ensures that existing instance is always used, c is optional
+// Singleton registers a shared instance for type a. Like Bind, but always returns the same instance.
 func (A *App) Singleton(a interface{}, c ...interface{}) AppInterface {
+	A.lock()
+	defer A.unlock()
+
 	var o ObjectInterface
 	var aType reflect.Type
 	var bType reflect.Type
@@ -293,7 +379,7 @@ func (A *App) Singleton(a interface{}, c ...interface{}) AppInterface {
 		}
 
 		if reflect.ValueOf(a).IsNil() {
-			a = A.Make(a)
+			a = A.makeInternal(a)
 		}
 
 		o = A.objectBuilder.New(a)
@@ -303,12 +389,16 @@ func (A *App) Singleton(a interface{}, c ...interface{}) AppInterface {
 		b := c[0]
 		bType = reflect.TypeOf(b)
 
-		// Obtain result of BindFund and bind to that
+		// Obtain result of BindFunc and bind to that
 		if bType.Kind() == reflect.Func {
 			bf := A.interfaceToBindFunc(b)
 			b = bf(A)
-		} else if reflect.ValueOf(c[0]).IsNil() {
-			b = A.Make(c[0])
+			realAType := A.resolveTypePtr(aType)
+			if !A.typeChecker.IsTypeCompatible(realAType, reflect.TypeOf(b), false) {
+				panic(fmt.Sprintf("Singleton BindFunc returned %s which is not compatible with %s", reflect.TypeOf(b), aType))
+			}
+		} else if isNilableKind(bType.Kind()) && reflect.ValueOf(b).IsNil() {
+			b = A.makeInternal(b)
 		}
 
 		o = A.objectBuilder.New(b)
@@ -348,8 +438,7 @@ func (A *App) validSingletonCombination(a interface{}, c ...interface{}) (result
 	if realAType.Kind() == reflect.Interface {
 		if bType.Kind() == reflect.Func {
 			// Interface to func with valid return type
-			bf := A.interfaceToBindFunc(b)
-			if v, _, _ := A.isFuncReturnCompatible(bf, realAType); v {
+			if A.isFuncSignatureCompatible(b, realAType) {
 				return true
 			}
 		}
@@ -360,8 +449,7 @@ func (A *App) validSingletonCombination(a interface{}, c ...interface{}) (result
 	}
 	if aType.Kind() == reflect.Ptr && bType.Kind() == reflect.Func {
 		// Pointer uses function for construction
-		bf := A.interfaceToBindFunc(b)
-		if v, _, _ := A.isFuncReturnCompatible(bf, aType); v {
+		if A.isFuncSignatureCompatible(b, aType) {
 			return true
 		}
 	}
@@ -379,33 +467,62 @@ func (A *App) When(a interface{}) *whenLink {
 	}
 }
 
+// Make resolves and returns an instance of type a. Uses the binding registry,
+// constructor methods (New), and struct tags (inject/di) to build the result.
+// Panics if a required interface or string binding is not found.
 func (A *App) Make(a interface{}) interface{} {
-	// Make with no fields provided
-	i := make(map[string]interface{})
-	return A.MakeWith(a, i)
+	A.lock()
+	defer A.unlock()
+	return A.makeInternal(a)
 }
 
-// Make type A with optional injectables
+func (A *App) makeInternal(a interface{}) interface{} {
+	return A.makeWithInternal(a, make(map[string]interface{}))
+}
+
+// MakeWith resolves type a with per-call field overrides. Map keys are field names.
 func (A *App) MakeWith(a interface{}, injectables map[string]interface{}) interface{} {
-	// Make with fields provided
+	A.lock()
+	defer A.unlock()
+	return A.makeWithInternal(a, injectables)
+}
+
+func (A *App) makeWithInternal(a interface{}, injectables map[string]interface{}) interface{} {
 	var x *Object
 	var e bool
 
 	t := reflect.TypeOf(a)
-
-	if t.Kind() == reflect.String {
-		// Obtain object by specified name
-		x, e = A.registry[a.(string)].(*Object)
-	} else {
-		// Obtain object by types full path & name
-		x, e = A.registry[A.typeFullName(t)].(*Object)
+	if t == nil {
+		panic("Make() requires a non-nil type")
 	}
+
+	var resolveKey string
+	if t.Kind() == reflect.String {
+		resolveKey = a.(string)
+	} else {
+		resolveKey = A.typeFullName(t)
+	}
+
+	if A.resolving[resolveKey] {
+		panic(fmt.Sprintf("circular dependency detected while resolving %s", resolveKey))
+	}
+	A.resolving[resolveKey] = true
+	defer delete(A.resolving, resolveKey)
+
+	x, e = A.registry[resolveKey].(*Object)
 
 	if e {
-		return A.processObject(x, injectables)
+		result := A.processObject(x, injectables)
+		if t.Kind() != reflect.String {
+			rType := reflect.TypeOf(result)
+			targetType := A.resolveTypePtr(t)
+			if !A.typeChecker.IsTypeCompatible(targetType, rType, false) {
+				panic(fmt.Sprintf("Made type %s is not compatible with requested type %s", rType, t))
+			}
+		}
+		return result
 	}
 
-	// Binding must exist if requesting interface or string
 	if t.Kind() == reflect.String {
 		panic(fmt.Sprintf("no binding found for %s", a))
 	}
@@ -413,132 +530,128 @@ func (A *App) MakeWith(a interface{}, injectables map[string]interface{}) interf
 		panic(fmt.Sprintf("no binding found for %s", t))
 	}
 
-	// All others can be automatically created
 	return A.autogen(a, injectables)
 }
 
+// processObject dispatches on the Object's Kind: follows redirects, returns
+// singletons, runs BindFuncs, or auto-generates structs/pointers.
 func (A *App) processObject(x *Object, injectables map[string]interface{}) interface{} {
 	if x.Kind == Redirect {
 		// Follow the redirect
-		return A.MakeWith(x.Value, injectables)
+		return A.makeWithInternal(x.Value, injectables)
 	}
 	if x.IsSingleton() {
-		// Singleton can only be Ptr
-		if x.Kind != Ptr {
-			panic(fmt.Sprintf("Unsupported Singleton Type %d", x.Kind))
-		}
-
 		return x.Value
 	}
 
 	if x.Kind == Func {
 		// Run the BindFunc
 		bf := A.interfaceToBindFunc(x.Value)
-		return bf(A)
-		/*
-			res := reflect.ValueOf(x.Value).Call([]reflect.Value{reflect.ValueOf(A)})
-			if len(res) == 0 {
-				panic(fmt.Sprintf("failed running make func for %s", reflect.TypeOf(a)))
-			}
-
-			return res[0].Interface()
-		*/
-	} else if x.Kind == Struct {
-		// Build the structure automatically
+		result := bf(A)
+		return A.processStructTags(result, injectables)
+	} else if x.Kind == Struct || x.Kind == Ptr {
 		return A.autogen(x.Value, injectables)
-	} else if x.Kind == Ptr {
-		// Build the pointer automatically
-		return A.autogen(x.Value, injectables)
+	} else if x.Kind == Primitive {
+		return x.Value
 	}
 
 	// Unknown type, shouldn't trigger
 	panic(fmt.Sprintf("Unsupported Type %d", x.Kind))
 }
 
+// autogen resolves a type that has no explicit binding, using either a New()
+// constructor method or struct tag hints.
 func (A *App) autogen(a interface{}, injectables map[string]interface{}) interface{} {
 	t := reflect.TypeOf(a)
 	_, e := t.MethodByName("New")
 
 	if e {
-		// A function called New is defined, use as a constructor
-		//return A.makeByNew(a, injectables) // Not yet supported
-		return A.makeByNew(a)
-	} else {
-		// No function exists, examine the tags
-		return A.makeByHints(a, injectables)
+		return A.makeByNew(a, injectables)
 	}
+	return A.makeByHints(a, injectables)
 }
 
+// makeByHints builds an instance using struct tag hints (inject/di) and the
+// When/Needs/Give contextual registry. Used when the type has no New() method.
 func (A *App) makeByHints(a interface{}, injectables map[string]interface{}) interface{} {
-	t := reflect.TypeOf(a)
-	ot := t
+	ot := reflect.TypeOf(a)
+	t := resolveTypePtr(ot)
 
-	// Resolve the object type to actual thing the pointer points to
-	for k := t.Kind(); k == reflect.Ptr; {
-		t = t.Elem()
-		k = t.Kind()
+	// Create a new instance of object to work with, preserving any existing field values
+	newobj := reflect.New(t)
+	origVal := reflect.ValueOf(a)
+	if origVal.Kind() == reflect.Ptr {
+		if !origVal.IsNil() {
+			newobj.Elem().Set(origVal.Elem())
+		}
+	} else if origVal.Kind() == reflect.Struct {
+		newobj.Elem().Set(origVal)
 	}
 
-	// Create a new instance of object to work with
-	newobj := reflect.New(t)
-
 	// Use injection registry - if x needs y give z
-	hintmap, hasmap := A.injectRegistry[A.typeFullName(reflect.TypeOf(a))]
+	hintmap, hasmap := A.injectRegistry[A.typeFullName(ot)]
 
 	// Iterate over the fields of the struct
 	for fn := 0; fn < t.NumField(); fn++ {
 		f := t.Field(fn)
 		// Obtain tag inject values
 		injectValue, inject := f.Tag.Lookup("inject")
+		_, di := f.Tag.Lookup("di")
 		newField := newobj.Elem().Field(fn)
-		if inject && newField.CanSet() {
-			var po ObjectInterface
-			var poe bool
-			if hasmap {
-				// If preset map exists, see if a mapping was configured for a type
-				if f.Type.Kind() == reflect.Interface {
-					// Ensure correct naming for interface
-					pPtr := reflect.New(f.Type)
-					po, poe = hintmap[A.typeFullName(pPtr.Type())]
-				} else {
-					po, poe = hintmap[A.typeFullName(f.Type)]
-				}
-			}
-			pv, pe := injectables[f.Name]
-			if pe && newField.Type() == reflect.TypeOf(pv) {
-				// Value for this field was provided in MakeWith
-				newField.Set(reflect.ValueOf(pv))
-			} else if poe {
-				c := A.processObject(po.(*Object), make(map[string]interface{}))
-				newField.Set(reflect.ValueOf(c))
-			} else if injectValue != "" {
-				// Inject value provided
+		if newField.CanSet() {
+			if di && inject && injectValue != "" && isPrimitiveKind(f.Type.Kind()) {
 				A.setByTagValue(f.Type.Kind(), newField, injectValue)
-			} else {
-				// Call Make on compatible field types
-				var c interface{}
-
-				if f.Type.Kind() == reflect.Ptr {
-					pPtr := reflect.New(f.Type.Elem())
-					c = A.Make(pPtr.Interface())
-				} else if f.Type.Kind() == reflect.Struct {
-					pPtr := reflect.New(f.Type)
-					c = A.Make(pPtr.Elem().Interface())
-				} else if f.Type.Kind() == reflect.Interface {
-					pPtr := reflect.New(f.Type)
-					c = A.Make(pPtr.Interface())
-				} else if f.Type.Kind() == reflect.Int {
-					panic(fmt.Sprintf("Value must be specified when injecting int"))
-				} else if f.Type.Kind() == reflect.String {
-					panic(fmt.Sprintf("Value must be specified when injecting string"))
+			} else if di {
+				containerVal := reflect.ValueOf(A)
+				if containerVal.Type().AssignableTo(f.Type) {
+					newField.Set(containerVal)
 				}
-
-				if c == nil {
-					// Not a valid type to inject on, remove the tag
-					panic(fmt.Sprintf("Could not inject %s (%s)", f.Type, f.Type.Kind()))
+			} else if inject {
+				var po ObjectInterface
+				var poe bool
+				if hasmap {
+					// If preset map exists, see if a mapping was configured for a type
+					if f.Type.Kind() == reflect.Interface {
+						// Ensure correct naming for interface
+						pPtr := reflect.New(f.Type)
+						po, poe = hintmap[A.typeFullName(pPtr.Type())]
+					} else {
+						po, poe = hintmap[A.typeFullName(f.Type)]
+					}
 				}
+				pv, pe := injectables[f.Name]
+				if pe && pv != nil && reflect.ValueOf(pv).Type().AssignableTo(newField.Type()) {
+					// Value for this field was provided in MakeWith
+					newField.Set(reflect.ValueOf(pv))
+				} else if poe {
+					c := A.processObject(po.(*Object), make(map[string]interface{}))
+					newField.Set(reflect.ValueOf(c))
+				} else if injectValue != "" {
+					// Inject value provided
+					A.setByTagValue(f.Type.Kind(), newField, injectValue)
+				} else {
+					// Call Make on compatible field types
+					var c interface{}
 
-				newField.Set(reflect.ValueOf(c))
+					if f.Type.Kind() == reflect.Ptr {
+						pPtr := reflect.New(f.Type.Elem())
+						c = A.makeInternal(pPtr.Interface())
+					} else if f.Type.Kind() == reflect.Struct {
+						pPtr := reflect.New(f.Type)
+						c = A.makeInternal(pPtr.Elem().Interface())
+					} else if f.Type.Kind() == reflect.Interface {
+						pPtr := reflect.New(f.Type)
+						c = A.makeInternal(pPtr.Interface())
+					} else if isPrimitiveKind(f.Type.Kind()) {
+						panic(fmt.Sprintf("Value must be specified when injecting %s", f.Type.Kind()))
+					}
+
+					if c == nil {
+						panic(fmt.Sprintf("Could not inject %s (%s)", f.Type, f.Type.Kind()))
+					}
+
+					newField.Set(reflect.ValueOf(c))
+				}
 			}
 		}
 	}
@@ -551,33 +664,21 @@ func (A *App) makeByHints(a interface{}, injectables map[string]interface{}) int
 	return newobj.Interface()
 }
 
-/*
+// makeByNew calls the type's New() constructor method with auto-resolved
+// parameters, then runs processStructTags on the result for inject/di tags.
 func (A *App) makeByNew(a interface{}, injectables map[string]interface{}) interface{} {
-	// Injectables for function not yet supported
-	// Go does not provide names of parameters
-	// Solution to be decided upon
-*/
-
-func (A *App) makeByNew(a interface{}) interface{} {
 	t := reflect.TypeOf(a)
 	valIn := reflect.ValueOf(a)
 
-	// We can't call "New" on a nil ptr object so create a new intance of type to work with
+	// We can't call "New" on a nil ptr so create a new instance of the type to work with
 	if t.Kind() == reflect.Ptr && valIn.IsNil() {
-		ct := t
-
-		for k := ct.Kind(); k == reflect.Ptr; {
-			ct = ct.Elem()
-			k = ct.Kind()
-		}
-
-		newobj := reflect.New(ct)
+		newobj := reflect.New(resolveTypePtr(t))
 		a = newobj.Interface()
 		valIn = reflect.ValueOf(a)
 	}
 
 	// Obtain preset injection map for object
-	hintmap, hasmap := A.injectRegistry[A.typeFullName(reflect.TypeOf(a))]
+	hintmap, hasmap := A.injectRegistry[A.typeFullName(t)]
 
 	method, _ := t.MethodByName("New")
 
@@ -611,11 +712,11 @@ func (A *App) makeByNew(a interface{}) interface{} {
 		if poe {
 			c = A.processObject(po.(*Object), make(map[string]interface{}))
 		} else if childType.Kind() == reflect.Ptr {
-			c = A.Make(pPtr.Interface())
+			c = A.makeInternal(pPtr.Interface())
 		} else if childType.Kind() == reflect.Interface {
-			c = A.Make(A.typeFullName(pPtr.Type()))
+			c = A.makeInternal(A.typeFullName(pPtr.Type()))
 		} else if childType.Kind() == reflect.Struct {
-			c = A.Make(pPtr.Elem().Interface())
+			c = A.makeInternal(pPtr.Elem().Interface())
 		}
 
 		if c == nil {
@@ -638,17 +739,110 @@ func (A *App) makeByNew(a interface{}) interface{} {
 	}
 
 	// Need to ensure return from new matches requested type, convert struct -> ptr, ptr -> struct
+	var result interface{}
 	if t.Kind() == y[0].Kind() {
-		return y[0].Interface()
+		result = y[0].Interface()
 	} else if t.Kind() == reflect.Struct && y[0].Kind() == reflect.Ptr {
-		return y[0].Elem().Interface()
+		result = y[0].Elem().Interface()
 	} else if t.Kind() == reflect.Ptr && y[0].Kind() == reflect.Struct {
 		z := reflect.New(y[0].Type())
 		z.Elem().Set(y[0])
-		return z.Interface()
+		result = z.Interface()
+	} else {
+		panic(fmt.Sprintf("Unexpected error occurred, type of New %s does not match requested type %s", y[0].Kind(), t.Kind()))
 	}
 
-	panic(fmt.Sprintf("Unexpected error occurred, type of New %s does not match requested type %s", y[0].Kind(), t.Kind()))
+	// Process di and inject tags on the result
+	result = A.processStructTags(result, injectables)
+
+	return result
+}
+
+// processStructTags runs after a New() constructor and applies inject/di struct
+// tags. Inject tags always overwrite; di tags only inject if the field is zero
+// (so values set by New() are preserved). Also consults the When/Needs/Give
+// registry for contextual overrides.
+func (A *App) processStructTags(a interface{}, injectables map[string]interface{}) interface{} {
+	ot := reflect.TypeOf(a)
+	if ot == nil {
+		return a
+	}
+
+	t := resolveTypePtr(ot)
+
+	if t.Kind() != reflect.Struct {
+		return a
+	}
+
+	var val reflect.Value
+	switch ot.Kind() {
+	case reflect.Ptr:
+		val = reflect.ValueOf(a).Elem()
+	default:
+		v := reflect.New(t)
+		v.Elem().Set(reflect.ValueOf(a))
+		val = v.Elem()
+	}
+
+	hintmap, hasmap := A.injectRegistry[A.typeFullName(ot)]
+
+	for fn := 0; fn < t.NumField(); fn++ {
+		f := t.Field(fn)
+		fieldVal := val.Field(fn)
+		if !fieldVal.CanSet() {
+			continue
+		}
+
+		_, di := f.Tag.Lookup("di")
+		injectValue, inject := f.Tag.Lookup("inject")
+
+		if di && inject && injectValue != "" && isPrimitiveKind(f.Type.Kind()) {
+			A.setByTagValue(f.Type.Kind(), fieldVal, injectValue)
+		} else if di && fieldVal.IsZero() {
+			containerVal := reflect.ValueOf(A)
+			if containerVal.Type().AssignableTo(f.Type) {
+				fieldVal.Set(containerVal)
+			}
+		} else if inject {
+			var po ObjectInterface
+			var poe bool
+			if hasmap {
+				if f.Type.Kind() == reflect.Interface {
+					pPtr := reflect.New(f.Type)
+					po, poe = hintmap[A.typeFullName(pPtr.Type())]
+				} else {
+					po, poe = hintmap[A.typeFullName(f.Type)]
+				}
+			}
+			pv, pe := injectables[f.Name]
+			if pe && pv != nil && reflect.ValueOf(pv).Type().AssignableTo(fieldVal.Type()) {
+				fieldVal.Set(reflect.ValueOf(pv))
+			} else if poe {
+				c := A.processObject(po.(*Object), make(map[string]interface{}))
+				fieldVal.Set(reflect.ValueOf(c))
+			} else if injectValue != "" {
+				A.setByTagValue(f.Type.Kind(), fieldVal, injectValue)
+			} else if f.Type.Kind() == reflect.Ptr || f.Type.Kind() == reflect.Struct || f.Type.Kind() == reflect.Interface {
+				var pPtr reflect.Value
+				if f.Type.Kind() == reflect.Ptr {
+					pPtr = reflect.New(f.Type.Elem())
+				} else {
+					pPtr = reflect.New(f.Type)
+				}
+				c := A.makeInternal(pPtr.Interface())
+				if c != nil {
+					fieldVal.Set(reflect.ValueOf(c))
+				}
+			} else if isPrimitiveKind(f.Type.Kind()) {
+				panic(fmt.Sprintf("Value must be specified when injecting %s", f.Type.Kind()))
+			}
+		}
+	}
+
+	if ot.Kind() == reflect.Struct {
+		return val.Interface()
+	}
+	return val.Addr().Interface()
 }
 
 func (A *App) setByTagValue(k reflect.Kind, f reflect.Value, v string) {
@@ -693,7 +887,7 @@ func (A *App) setByTagValue(k reflect.Kind, f reflect.Value, v string) {
 		f.Set(reflect.ValueOf(int8(iv)))
 		return
 	case reflect.Int16:
-		iv, err := strconv.ParseInt(v, 10, 15)
+		iv, err := strconv.ParseInt(v, 10, 16)
 		if err != nil {
 			panic(err)
 		}
@@ -754,14 +948,45 @@ func (A *App) setByTagValue(k reflect.Kind, f reflect.Value, v string) {
 	panic(fmt.Sprintf("can not initialize value for kind %s", k))
 }
 
-// Get full path & name for type for almost unique naming
+func isIntKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return true
+	}
+	return false
+}
+
+func isPrimitiveKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.String, reflect.Bool, reflect.Float32, reflect.Float64:
+		return true
+	}
+	return isIntKind(k)
+}
+
+func isNilableKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice, reflect.UnsafePointer:
+		return true
+	}
+	return false
+}
+
 func (A *App) typeFullName(t reflect.Type) string {
-	pt := A.resolveTypePtr(t)
+	return typeFullName(t)
+}
+
+func (A *App) resolveTypePtr(t reflect.Type) reflect.Type {
+	return resolveTypePtr(t)
+}
+
+func typeFullName(t reflect.Type) string {
+	pt := resolveTypePtr(t)
 	return pt.PkgPath() + "/" + t.String()
 }
 
-// If a Ptr type, obtains type it points to
-func (A *App) resolveTypePtr(t reflect.Type) reflect.Type {
+func resolveTypePtr(t reflect.Type) reflect.Type {
 	for k := t.Kind(); k == reflect.Ptr; {
 		t = t.Elem()
 		k = t.Kind()
@@ -771,19 +996,36 @@ func (A *App) resolveTypePtr(t reflect.Type) reflect.Type {
 
 // Converts an interface into a BindFunc
 func (A *App) interfaceToBindFunc(a interface{}) BindFunc {
-	var bf BindFunc
 	aType := reflect.TypeOf(a)
-	if !aType.ConvertibleTo(reflect.TypeOf(bf)) {
+	if !aType.ConvertibleTo(bindFuncType) {
 		panic("Unsupported function type, must be compatible with BindFunc")
 	}
-	bf = reflect.ValueOf(a).Convert(reflect.TypeOf(bf)).Interface().(BindFunc)
-	return bf
+	return reflect.ValueOf(a).Convert(bindFuncType).Interface().(BindFunc)
 }
 
-// Checks if Func returns type, returns bool, the type & value
-func (A *App) isFuncReturnCompatible(bf BindFunc, t reflect.Type) (bool, reflect.Type, interface{}) {
-	r := bf(A)
-	rType := reflect.TypeOf(r)
+var (
+	emptyInterfaceType = reflect.TypeOf((*interface{})(nil)).Elem()
+	appPtrType         = reflect.TypeOf((*App)(nil))
+	bindFuncType       = reflect.TypeOf(BindFunc(nil))
+)
 
-	return A.typeChecker.IsTypeCompatible(t, rType, true), rType, r
+// Checks if a BindFunc's signature is compatible (takes *App, returns one compatible value)
+func (A *App) isFuncSignatureCompatible(b interface{}, t reflect.Type) bool {
+	bType := reflect.TypeOf(b)
+	if bType.Kind() != reflect.Func {
+		return false
+	}
+	if bType.NumIn() != 1 || bType.In(0) != appPtrType {
+		return false
+	}
+	if bType.NumOut() != 1 {
+		return false
+	}
+	outType := bType.Out(0)
+	if outType != emptyInterfaceType {
+		if !A.typeChecker.IsTypeCompatible(t, outType, false) {
+			return false
+		}
+	}
+	return true
 }

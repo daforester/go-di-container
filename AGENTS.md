@@ -26,10 +26,11 @@ go-di-container/
 ## Binding Patterns
 | What | Syntax |
 |------|--------|
-| Interface → impl | `c.Bind((*I)(nil), S{})` |
-| Interface → ptr | `c.Bind((*I)(nil), &S{})` |
-| Interface → factory | `c.Bind((*I)(nil), func(a *di.App) interface{} { return &S{} })` |
+| Interface -> impl | `c.Bind((*I)(nil), S{})` |
+| Interface -> ptr | `c.Bind((*I)(nil), &S{})` |
+| Interface -> factory | `c.Bind((*I)(nil), func(a *di.App) interface{} { return &S{} })` |
 | Named | `c.Bind("key", value)` |
+| Named primitive | `c.Bind("port", 8080)` |
 | Alias | `c.Bind("alias", "key")` |
 | Constructor | `c.Bind(&S{}, func(a *di.App) interface{} { ... })` |
 
@@ -37,20 +38,16 @@ go-di-container/
 | What | Syntax |
 |------|--------|
 | Instance | `c.Singleton(&S{})` |
-| Interface → instance | `c.Singleton((*I)(nil), &S{})` |
-| Interface → factory | `c.Singleton((*I)(nil), func(a *di.App) interface{} { return &S{} })` |
+| Interface -> instance | `c.Singleton((*I)(nil), &S{})` |
+| Interface -> factory | `c.Singleton((*I)(nil), func(a *di.App) interface{} { return &S{} })` |
 
-## Injection Tags
-```go
-type S struct {
-    IntField    int     `inject:"42"`
-    StrField    string  `inject:"hello"`
-    BoolField   bool    `inject:"true"`
-    FloatField  float64 `inject:"3.14"`
-    DepField    MyInterface `inject:""`     // auto-resolve
-    PtrDepField *MyStruct   `inject:""`     // auto-resolve ptr
-}
-```
+## Struct Tags
+| Tag | Effect |
+|-----|--------|
+| `inject:"42"` | Set literal value (primitives only) |
+| `inject:""` | Auto-resolve dependency from container |
+| `di:""` | Inject the container itself |
+| `di:"" inject:"42"` | Primitives: use inject value; non-primitives: inject container |
 
 ## Constructor Method
 If a type has `New(...)` method, it's called as constructor:
@@ -62,27 +59,46 @@ func (s S) New(dep Dependency) *S { return &S{dep: dep} }
 ```go
 c.When(&RequestingType{}).Needs((*Dependency)(nil)).Give(&Concrete{})
 ```
+Applies to both `New()` parameters and inject-tagged struct fields.
 
 ## Override at Make Time
 ```go
 c.MakeWith(&S{}, map[string]interface{}{"FieldName": value})
 ```
 
+## Resolution Precedence (for inject-tagged fields)
+1. MakeWith overrides (per-call)
+2. When/Needs/Give (contextual)
+3. inject tag value (literal)
+4. Auto-resolve (recursive Make)
+
+## Internal Architecture
+- **Public methods** (`Bind`, `Singleton`, `Make`, `MakeWith`) acquire a reentrant lock, then delegate to internal methods
+- **makeByHints** - builds instances via struct tag inspection (no `New()` method)
+- **makeByNew** - calls the `New()` constructor, then runs `processStructTags`
+- **processStructTags** - post-constructor: inject tags always overwrite, di tags only set zero fields
+- **processObject** - dispatches by Object.Kind (Redirect/Singleton/Func/Struct/Ptr/Primitive)
+
 ## Important Behaviors
+- **Thread safe** - all public methods use a reentrant per-container mutex
+- **Circular dependency detection** - panics instead of stack overflow
 - **Panics on errors** - no error returns, invalid usage panics
 - **Auto-generation** - structs/pointers without bindings are auto-created via reflection
-- **Global state** - `defaultApp` and `instances` are package-level globals
 - **Type naming** - uses `PkgPath + "/" + Type.String()` as registry keys
-- **Interface binding syntax** - must use `(*Interface)(nil)` pattern, not `new(Interface)`
-- **Removing bindings** - pass `nil` as the second argument to `Bind` or `Singleton`
+- **Interface binding syntax** - must use `(*Interface)(nil)` pattern
+- **Removing bindings** - pass `nil` as the second argument to `Bind`, `Singleton`, or `Give`
+- **BindFunc re-entry** - BindFuncs can safely call `Make` on the container they receive
 
 ## Testing
 - Tests use `MockObject` and `MockTypeChecker` injected via `AppConfig`
-- Run tests: `go test ./di/`
+- Run tests: `go test -race ./di/`
 
 ## Common Pitfalls
 1. Use `(*Interface)(nil)` not `nil` or `new(Interface)` for interface bindings
-2. `int` and `string` fields with empty `inject:""` tag will panic (must provide value)
-3. Singleton must be a pointer type
+2. Primitive fields with empty `inject:""` tag will panic (must provide a value)
+3. Singleton must be a pointer type (the first argument)
 4. `BindFunc` must match `func(*di.App) interface{}` signature
-5. Contextual injection (`When`) only applies during `Make`/`MakeWith` resolution
+5. `inject` tags always overwrite field values, even those set by `New()` constructors
+6. `di` tags only inject if the field is zero (preserves `New()` constructor values)
+7. `Bind("key", "value")` creates a redirect (alias), not a primitive string binding
+8. Singleton BindFunc return types are validated at registration time

@@ -19,7 +19,7 @@ s := c.Make((*Service)(nil)).(Service)
 
 ## Constructor Function Binding
 ```go
-c.Bind((*Service)(nil), func(a *App) interface{} {
+c.Bind((*Service)(nil), func(a *di.App) interface{} {
     return &MyService{ /* init */ }
 })
 ```
@@ -30,7 +30,7 @@ c.Bind((*Service)(nil), func(a *App) interface{} {
 c.Singleton(&MyService{Config: "prod"})
 
 // Singleton via constructor
-c.Singleton((*Service)(nil), func(a *App) interface{} {
+c.Singleton((*Service)(nil), func(a *di.App) interface{} {
     return &MyService{Config: "prod"}
 })
 
@@ -38,7 +38,7 @@ c.Singleton((*Service)(nil), func(a *App) interface{} {
 c.Singleton((*Service)(nil), (*MyService)(nil))
 ```
 
-## Struct Field Injection via Tags
+## Struct Field Injection via `inject` Tag
 ```go
 type Config struct {
     Port     int     `inject:"8080"`
@@ -51,7 +51,7 @@ cfg := c.Make(Config{}).(Config)
 // cfg.Port == 8080, cfg.Host == "localhost", etc.
 ```
 
-## Dependency Injection via Tags
+## Dependency Injection via `inject` Tag
 ```go
 type Handler struct {
     DB    Database    `inject:""`
@@ -60,9 +60,31 @@ type Handler struct {
 }
 
 c.Bind((*Database)(nil), &PostgresDB{})
-c.Bind((*RedisCache)(nil), &RedisCache{})
 h := c.Make(&Handler{}).(*Handler)
-// h.DB and h.Cache are auto-resolved
+// h.DB is auto-resolved, h.Name == "my-handler"
+```
+
+## Container Injection via `di` Tag
+```go
+type MyService struct {
+    Container *di.App       `di:""`  // inject as concrete type
+    App       di.AppInterface `di:""` // inject as interface
+}
+
+svc := c.Make(&MyService{}).(*MyService)
+// svc.Container is the container that resolved it
+```
+
+## Dual `di` + `inject` Tags
+```go
+type AppConfig struct {
+    Container *di.App `di:"" inject:""`     // non-primitive: container injected
+    Port      int     `di:"" inject:"8080"` // primitive: inject value used
+    Name      string  `di:"" inject:"app"`  // primitive: inject value used
+}
+
+cfg := c.Make(&AppConfig{}).(*AppConfig)
+// cfg.Container == c, cfg.Port == 8080, cfg.Name == "app"
 ```
 
 ## Contextual Injection (When/Needs/Give)
@@ -72,6 +94,8 @@ c.When(&AdminHandler{}).Needs((*Database)(nil)).Give(&AdminDB{})
 
 // When UserHandler needs a Database, give it UserDB
 c.When(&UserHandler{}).Needs((*Database)(nil)).Give(&UserDB{})
+
+// Works with both struct field injection and New() constructor parameters
 ```
 
 ## Constructor Method Pattern
@@ -87,7 +111,7 @@ func (s Service) New(repo Repository) *Service {
 
 c.Bind((*Repository)(nil), &MemoryRepo{})
 s := c.Make(&Service{}).(*Service)
-// s.repo is auto-injected, s.name == "default"
+// s.repo is auto-injected via New(), s.name == "default"
 ```
 
 ## MakeWith (Per-Call Overrides)
@@ -116,15 +140,59 @@ c.Bind("defaultDB", "primaryDB")
 db := c.Make("primaryDB")
 ```
 
+## Named Primitive Bindings
+```go
+c.Bind("port", 8080)
+c.Bind("host", "localhost")  // Note: strings create redirects, not primitive bindings
+c.Bind("debug", true)
+c.Bind("rate", 3.14)
+
+port := c.Make("port").(int)      // 8080
+debug := c.Make("debug").(bool)   // true
+rate := c.Make("rate").(float64)  // 3.14
+```
+
 ## Removing Bindings
 ```go
 c.Bind((*Service)(nil), nil)       // Remove binding
 c.Singleton((*Service)(nil), nil)  // Remove singleton
+
+// Remove contextual binding
+c.When(&Handler{}).Needs((*Service)(nil)).Give(nil)
 ```
 
 ## Named App Instances
 ```go
 app1 := di.Default("app1")
 app2 := di.Default("app2")
-// Each has its own registry
+// Each has its own independent registry
+```
+
+## BindFunc Calling Make (Nested Resolution)
+```go
+c.Bind((*Service)(nil), func(a *di.App) interface{} {
+    // Safe: reentrant locking allows this
+    config := a.Make(&Config{}).(*Config)
+    return &MyService{Port: config.Port}
+})
+```
+
+## Concurrent Usage
+```go
+c := di.New()
+c.Bind((*Service)(nil), func(a *di.App) interface{} {
+    return &MyService{}
+})
+
+// Safe to call from multiple goroutines
+var wg sync.WaitGroup
+for i := 0; i < 10; i++ {
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        svc := c.Make((*Service)(nil)).(Service)
+        svc.Do()
+    }()
+}
+wg.Wait()
 ```

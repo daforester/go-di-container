@@ -320,7 +320,7 @@ func TestApp_Bind_InterfaceToIncompatibleFuncFail(t *testing.T) {
 func TestApp_Bind_InterfaceToFuncWithIncompatibleReturnFail(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
-			t.Error("Expected panic in response to Bind with BindFunc to incompatible type for interface")
+			t.Error("Expected panic when making interface bound to func returning incompatible type")
 		}
 
 	}()
@@ -330,6 +330,7 @@ func TestApp_Bind_InterfaceToFuncWithIncompatibleReturnFail(t *testing.T) {
 	}
 
 	app.Bind((*AppTestInterface)(nil), bf)
+	app.Make((*AppTestInterface)(nil))
 }
 
 func TestApp_Bind_InterfaceToIncompatiblePointerFail(t *testing.T) {
@@ -345,7 +346,7 @@ func TestApp_Bind_InterfaceToIncompatiblePointerFail(t *testing.T) {
 func TestApp_Bind_StructToFuncWithIncompatibleReturnFail(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
-			t.Error("Expected panic in response to Bind with BindFunc to incompatible type for struct")
+			t.Error("Expected panic when making struct bound to func returning incompatible type")
 		}
 
 	}()
@@ -355,6 +356,7 @@ func TestApp_Bind_StructToFuncWithIncompatibleReturnFail(t *testing.T) {
 	}
 
 	app.Bind(&AppTestStruct{}, bf)
+	app.Make(&AppTestStruct{})
 }
 
 func TestApp_Bind_IncompatibleInputFail(t *testing.T) {
@@ -636,7 +638,7 @@ func TestApp_Make(t *testing.T) {
 
 	o = app.Make(AppTestTypeInjects{})
 	if reflect.TypeOf(o) != reflect.TypeOf(AppTestTypeInjects{}) {
-		t.Error("App did not make an *AppTestTypeInjects")
+		t.Error("App did not make an AppTestTypeInjects")
 	}
 
 	ov := o.(AppTestTypeInjects)
@@ -647,7 +649,7 @@ func TestApp_Make(t *testing.T) {
 		t.Error("Float32 was not set to 3.1432")
 	}
 	if ov.F64 != 3.14164 {
-		t.Error("Float32 was not set to 3.14164")
+		t.Error("Float64 was not set to 3.14164")
 	}
 	if ov.I != -3 {
 		t.Error("Int was not set to -3")
@@ -687,32 +689,27 @@ func TestApp_MakeWith(t *testing.T) {
 		"B": "Foobar",
 	})
 	if reflect.TypeOf(o) != reflect.TypeOf(&AppTestInjectStruct{}) {
-		t.Error("App did not make an *AppTestNewStruct")
+		t.Error("App did not make an *AppTestInjectStruct")
 	}
 	if o.(*AppTestInjectStruct).A != 8 {
-		t.Error("App did not inject 5 into integer")
+		t.Error("App did not inject 8 into integer")
 	}
 	if o.(*AppTestInjectStruct).B != "Foobar" {
 		t.Error("App did not inject \"Foobar\" into string")
 	}
 }
 
-func TestApp_Make_SingletonNonPtrObjectFail(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("Expected panic in response to invalid Singleton Object")
-		}
-	}()
-
-	app.registry["BadSingletonNonPtrObject"] = &Object{
-		Value:        nil,
-		Name:         "BadSingletonNonPtrObject",
-		Kind:         0,
-		singleton:    true,
-		reflectType:  nil,
-		reflectValue: reflect.Value{},
+func TestApp_Make_SingletonReturnsStoredValue(t *testing.T) {
+	app.registry["PrimitiveSingleton"] = &Object{
+		Value:     42,
+		Name:      "PrimitiveSingleton",
+		Kind:      Primitive,
+		singleton: true,
 	}
-	app.Make("BadSingletonNonPtrObject")
+	o := app.Make("PrimitiveSingleton")
+	if o != 42 {
+		t.Errorf("Expected 42, got %v", o)
+	}
 }
 
 func TestApp_Make_BadFuncObjectFail(t *testing.T) {
@@ -723,12 +720,10 @@ func TestApp_Make_BadFuncObjectFail(t *testing.T) {
 	}()
 
 	app.registry["BadFuncObject"] = &Object{
-		Value:        func(a *App) {},
-		Name:         "BadFuncObject",
-		Kind:         Func,
-		singleton:    false,
-		reflectType:  nil,
-		reflectValue: reflect.Value{},
+		Value:     func(a *App) {},
+		Name:      "BadFuncObject",
+		Kind:      Func,
+		singleton: false,
 	}
 	app.Make("BadFuncObject")
 }
@@ -741,12 +736,10 @@ func TestApp_Make_BadObjectTypeFail(t *testing.T) {
 	}()
 
 	app.registry["BadObjectType"] = &Object{
-		Value:        0,
-		Name:         "BadObjectType",
-		Kind:         Unknown,
-		singleton:    false,
-		reflectType:  nil,
-		reflectValue: reflect.Value{},
+		Value:     0,
+		Name:      "BadObjectType",
+		Kind:      Unknown,
+		singleton: false,
 	}
 	app.Make("BadObjectType")
 }
@@ -1014,7 +1007,7 @@ func TestApp_When(t *testing.T) {
 func TestApp_When_BindFail(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
-			t.Error("Expected panic in response to bad binding for When, Need, Give")
+			t.Error("Expected panic when making object with incompatible When binding")
 		}
 	}()
 
@@ -1027,8 +1020,341 @@ func TestApp_When_BindFail(t *testing.T) {
 			"stringBBB",
 		}
 	})
+
+	app.Make(&AppTestNewStruct{})
 }
 
 func TestApp_When_Delete(t *testing.T) {
 	app.When(&AppTestNewStruct{}).Needs((*AppTestInterface)(nil)).Give(nil)
+}
+
+type AppTestDiTagStruct struct {
+	Container *App `di:""`
+	Name      string
+}
+
+type AppTestDiTagWithNewStruct struct {
+	Container *App `di:""`
+	Value     int
+}
+
+func (a AppTestDiTagWithNewStruct) New() *AppTestDiTagWithNewStruct {
+	return &AppTestDiTagWithNewStruct{
+		Value: 42,
+	}
+}
+
+type AppTestDiTagNewPriorityStruct struct {
+	Container AppInterface `di:""`
+	Value     int
+}
+
+func (a AppTestDiTagNewPriorityStruct) New() *AppTestDiTagNewPriorityStruct {
+	return &AppTestDiTagNewPriorityStruct{
+		Container: Default(),
+		Value:     99,
+	}
+}
+
+type AppTestDiTagNewPartialStruct struct {
+	Container *App `di:""`
+	Logger    *App `di:""`
+	Value     int
+}
+
+func (a AppTestDiTagNewPartialStruct) New() *AppTestDiTagNewPartialStruct {
+	return &AppTestDiTagNewPartialStruct{
+		Logger: nil,
+		Value:  77,
+	}
+}
+
+type AppTestDiTagInterfaceStruct struct {
+	Container AppInterface `di:""`
+}
+
+func TestApp_Make_DiTag(t *testing.T) {
+	c := New()
+	o := c.Make(&AppTestDiTagStruct{})
+	if o == nil {
+		t.Error("Failed to make struct with di tag")
+	}
+	s := o.(*AppTestDiTagStruct)
+	if s.Container == nil {
+		t.Error("Container was not injected via di tag")
+	}
+	if reflect.TypeOf(s.Container) != reflect.TypeOf(&App{}) {
+		t.Error("Container type is not *App")
+	}
+}
+
+func TestApp_Make_DiTagWithNew(t *testing.T) {
+	c := New()
+	o := c.Make(&AppTestDiTagWithNewStruct{})
+	if o == nil {
+		t.Error("Failed to make struct with di tag and New method")
+	}
+	s := o.(*AppTestDiTagWithNewStruct)
+	if s.Container == nil {
+		t.Error("Container was not injected via di tag on struct with New method")
+	}
+	if s.Value != 42 {
+		t.Error("New method should set Value to 42")
+	}
+}
+
+func TestApp_Make_DiTagNewPriority(t *testing.T) {
+	c := New()
+	o := c.Make(&AppTestDiTagNewPriorityStruct{})
+	if o == nil {
+		t.Error("Failed to make struct with di tag and New method providing container")
+	}
+	s := o.(*AppTestDiTagNewPriorityStruct)
+	if s.Container == nil {
+		t.Error("New method should set Container")
+	}
+	if s.Value != 99 {
+		t.Error("New method should set Value to 99")
+	}
+}
+
+func TestApp_Make_DiTagNewPartial(t *testing.T) {
+	c := New()
+	o := c.Make(&AppTestDiTagNewPartialStruct{})
+	if o == nil {
+		t.Error("Failed to make struct with partial New and di tags")
+	}
+	s := o.(*AppTestDiTagNewPartialStruct)
+	if s.Value != 77 {
+		t.Error("New method should set Value to 77")
+	}
+	if s.Logger == nil {
+		t.Error("di tag should inject Logger since New left it nil")
+	}
+}
+
+func TestApp_Make_DiTagInterface(t *testing.T) {
+	c := New()
+	o := c.Make(&AppTestDiTagInterfaceStruct{})
+	if o == nil {
+		t.Error("Failed to make struct with di tag for AppInterface")
+	}
+	s := o.(*AppTestDiTagInterfaceStruct)
+	if s.Container == nil {
+		t.Error("Container was not injected via di tag for AppInterface")
+	}
+}
+
+func TestApp_Make_DiTagViaBind(t *testing.T) {
+	c := New()
+	c.Bind(&AppTestDiTagStruct{}, func(a *App) interface{} {
+		return &AppTestDiTagStruct{}
+	})
+	o := c.Make(&AppTestDiTagStruct{})
+	if o == nil {
+		t.Error("Failed to make bound struct with di tag")
+	}
+	s := o.(*AppTestDiTagStruct)
+	if s.Container == nil {
+		t.Error("Container was not injected via di tag on bound struct")
+	}
+}
+
+// --- Both inject and di tags on the same field ---
+
+type AppTestDualTagPrimitives struct {
+	Name    string  `di:"" inject:"hello"`
+	Age     int     `di:"" inject:"25"`
+	Score   float64 `di:"" inject:"3.14"`
+	Active  bool    `di:"" inject:"true"`
+	Small   int8    `di:"" inject:"-8"`
+	Big     uint64  `di:"" inject:"999"`
+	Precise float32 `di:"" inject:"2.5"`
+}
+
+func TestApp_Make_DualTag_PrimitiveUsesInject(t *testing.T) {
+	c := New()
+	o := c.Make(&AppTestDualTagPrimitives{}).(*AppTestDualTagPrimitives)
+
+	if o.Name != "hello" {
+		t.Errorf("String field: expected hello, got %s", o.Name)
+	}
+	if o.Age != 25 {
+		t.Errorf("Int field: expected 25, got %d", o.Age)
+	}
+	if o.Score != 3.14 {
+		t.Errorf("Float64 field: expected 3.14, got %f", o.Score)
+	}
+	if o.Active != true {
+		t.Errorf("Bool field: expected true, got %v", o.Active)
+	}
+	if o.Small != -8 {
+		t.Errorf("Int8 field: expected -8, got %d", o.Small)
+	}
+	if o.Big != 999 {
+		t.Errorf("Uint64 field: expected 999, got %d", o.Big)
+	}
+	if o.Precise != 2.5 {
+		t.Errorf("Float32 field: expected 2.5, got %f", o.Precise)
+	}
+}
+
+type AppTestDualTagContainer struct {
+	Container *App `di:"" inject:""`
+}
+
+func TestApp_Make_DualTag_ContainerUsesDi(t *testing.T) {
+	c := New()
+	o := c.Make(&AppTestDualTagContainer{}).(*AppTestDualTagContainer)
+
+	if o.Container == nil {
+		t.Error("Container field with di+inject (no value) should be injected via di")
+	}
+}
+
+type AppTestDualTagMixed struct {
+	Container *App   `di:""`
+	Port      int    `di:"" inject:"8080"`
+	Host      string `di:"" inject:"localhost"`
+}
+
+func TestApp_Make_DualTag_MixedFields(t *testing.T) {
+	c := New()
+	o := c.Make(&AppTestDualTagMixed{}).(*AppTestDualTagMixed)
+
+	if o.Container == nil {
+		t.Error("Container (di only) should be injected")
+	}
+	if o.Port != 8080 {
+		t.Errorf("Port (di+inject) expected 8080, got %d", o.Port)
+	}
+	if o.Host != "localhost" {
+		t.Errorf("Host (di+inject) expected localhost, got %s", o.Host)
+	}
+}
+
+type AppTestDualTagWithNew struct {
+	Port      int    `di:"" inject:"9090"`
+	Container *App   `di:""`
+	Value     string
+}
+
+func (a AppTestDualTagWithNew) New() *AppTestDualTagWithNew {
+	return &AppTestDualTagWithNew{
+		Value: "from-new",
+	}
+}
+
+func TestApp_Make_DualTag_WithNewMethod(t *testing.T) {
+	c := New()
+	o := c.Make(&AppTestDualTagWithNew{}).(*AppTestDualTagWithNew)
+
+	if o.Value != "from-new" {
+		t.Errorf("New() should set Value, got %s", o.Value)
+	}
+	if o.Port != 9090 {
+		t.Errorf("Port (di+inject) should use inject value after New(), got %d", o.Port)
+	}
+	if o.Container == nil {
+		t.Error("Container (di only) should be injected after New()")
+	}
+}
+
+// --- Int16 full range (regression: bitSize was 15 instead of 16) ---
+
+type AppTestInt16FullRange struct {
+	Pos int16 `inject:"20000"`
+	Neg int16 `inject:"-20000"`
+	Max int16 `inject:"32767"`
+	Min int16 `inject:"-32768"`
+}
+
+func TestApp_Make_Int16FullRange(t *testing.T) {
+	c := New()
+	o := c.Make(&AppTestInt16FullRange{}).(*AppTestInt16FullRange)
+
+	if o.Pos != 20000 {
+		t.Errorf("Expected 20000, got %d", o.Pos)
+	}
+	if o.Neg != -20000 {
+		t.Errorf("Expected -20000, got %d", o.Neg)
+	}
+	if o.Max != 32767 {
+		t.Errorf("Expected 32767, got %d", o.Max)
+	}
+	if o.Min != -32768 {
+		t.Errorf("Expected -32768, got %d", o.Min)
+	}
+}
+
+// --- MakeWith works with New() method types ---
+
+type AppTestMakeWithNewMethod struct {
+	Name      string           `inject:""`
+	Svc       AppTestInterface `inject:""`
+	FromNew   int
+}
+
+func (a AppTestMakeWithNewMethod) New(svc AppTestInterface) *AppTestMakeWithNewMethod {
+	return &AppTestMakeWithNewMethod{
+		Svc:     svc,
+		FromNew: 7,
+	}
+}
+
+func TestApp_MakeWith_NewMethodReceivesInjectables(t *testing.T) {
+	c := New()
+	c.Bind((*AppTestInterface)(nil), func(a *App) interface{} {
+		return &AppTestStruct{A: 1, B: "default"}
+	})
+
+	o := c.MakeWith(&AppTestMakeWithNewMethod{}, map[string]interface{}{
+		"Name": "injected-name",
+	}).(*AppTestMakeWithNewMethod)
+
+	if o.FromNew != 7 {
+		t.Errorf("New() should set FromNew to 7, got %d", o.FromNew)
+	}
+	if o.Name != "injected-name" {
+		t.Errorf("MakeWith should inject Name, got %s", o.Name)
+	}
+	if o.Svc == nil {
+		t.Error("Svc should be resolved via inject tag")
+	}
+}
+
+// --- MakeWith nil injectable value must not panic ---
+
+func TestApp_MakeWith_NilInjectableValue(t *testing.T) {
+	c := New()
+	c.Bind((*AppTestInterface)(nil), func(a *App) interface{} {
+		return &AppTestStruct{A: 1, B: "default"}
+	})
+
+	// nil value in injectables should be skipped, not cause a reflect panic
+	o := c.MakeWith(&AppTestInjectStruct{}, map[string]interface{}{
+		"TestStruct": nil,
+	}).(*AppTestInjectStruct)
+
+	if o.TestStruct == nil {
+		t.Error("TestStruct should fall through to Make when injectable is nil")
+	}
+}
+
+// --- Needs(nil) should give clear panic ---
+
+func TestApp_When_NeedsNil(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Error("Expected panic when using nil as needs type")
+		}
+		msg, ok := r.(string)
+		if !ok || msg != "Needs() requires a non-nil dependency type" {
+			t.Errorf("Expected clear Needs() panic message, got %v", r)
+		}
+	}()
+
+	c := New()
+	c.When(&AppTestStruct{}).Needs(nil).Give(&AppTestStruct{})
 }

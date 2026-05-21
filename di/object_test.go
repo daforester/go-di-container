@@ -105,6 +105,16 @@ func TestObject_New_InvalidFunc(t *testing.T) {
 	})
 }
 
+func TestObject_New_PrimitiveType(t *testing.T) {
+	o := Object{}.New(1).(*Object)
+	if o.Kind != Primitive {
+		t.Errorf("Expected Primitive kind, got %d", o.Kind)
+	}
+	if o.Value != 1 {
+		t.Errorf("Expected value 1, got %v", o.Value)
+	}
+}
+
 func TestObject_New_InvalidType(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -112,7 +122,7 @@ func TestObject_New_InvalidType(t *testing.T) {
 		}
 	}()
 
-	Object{}.New(1)
+	Object{}.New(make(chan int))
 }
 
 func TestObject_Singleton(t *testing.T) {

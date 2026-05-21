@@ -100,4 +100,26 @@ func TestTypeChecker_IsTypeCompatible(t *testing.T) {
 	if !b {
 		t.Error(fmt.Sprintf("Expected true comparing struct to interface"))
 	}
+
+	// Cross-type ptr/struct must NOT match
+	b = TypeChecker{}.IsTypeCompatible(aType, dType, false)
+	if b {
+		t.Error(fmt.Sprintf("Expected false comparing *teststructa to teststructb (different types)"))
+	}
+
+	b = TypeChecker{}.IsTypeCompatible(bType, cType, false)
+	if b {
+		t.Error(fmt.Sprintf("Expected false comparing teststructa to *teststructb (different types)"))
+	}
+
+	// Same-type ptr/struct should still match in non-strict
+	b = TypeChecker{}.IsTypeCompatible(aType, bType, false)
+	if !b {
+		t.Error(fmt.Sprintf("Expected true comparing *teststructa to teststructa"))
+	}
+
+	b = TypeChecker{}.IsTypeCompatible(bType, aType, false)
+	if !b {
+		t.Error(fmt.Sprintf("Expected true comparing teststructa to *teststructa"))
+	}
 }
