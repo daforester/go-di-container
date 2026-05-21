@@ -605,6 +605,21 @@ func (A *App) makeByHints(a interface{}, injectables map[string]interface{}) int
 				containerVal := reflect.ValueOf(A)
 				if containerVal.Type().AssignableTo(f.Type) {
 					newField.Set(containerVal)
+				} else {
+					var c interface{}
+					if f.Type.Kind() == reflect.Ptr {
+						pPtr := reflect.New(f.Type.Elem())
+						c = A.makeInternal(pPtr.Interface())
+					} else if f.Type.Kind() == reflect.Struct {
+						pPtr := reflect.New(f.Type)
+						c = A.makeInternal(pPtr.Elem().Interface())
+					} else if f.Type.Kind() == reflect.Interface {
+						pPtr := reflect.New(f.Type)
+						c = A.makeInternal(pPtr.Interface())
+					}
+					if c != nil {
+						newField.Set(reflect.ValueOf(c))
+					}
 				}
 			} else if inject {
 				var po ObjectInterface
@@ -802,6 +817,21 @@ func (A *App) processStructTags(a interface{}, injectables map[string]interface{
 			containerVal := reflect.ValueOf(A)
 			if containerVal.Type().AssignableTo(f.Type) {
 				fieldVal.Set(containerVal)
+			} else {
+				var c interface{}
+				if f.Type.Kind() == reflect.Ptr {
+					pPtr := reflect.New(f.Type.Elem())
+					c = A.makeInternal(pPtr.Interface())
+				} else if f.Type.Kind() == reflect.Struct {
+					pPtr := reflect.New(f.Type)
+					c = A.makeInternal(pPtr.Elem().Interface())
+				} else if f.Type.Kind() == reflect.Interface {
+					pPtr := reflect.New(f.Type)
+					c = A.makeInternal(pPtr.Interface())
+				}
+				if c != nil {
+					fieldVal.Set(reflect.ValueOf(c))
+				}
 			}
 		} else if inject {
 			var po ObjectInterface

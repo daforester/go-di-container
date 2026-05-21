@@ -602,6 +602,88 @@ func TestEndUser_NamedPrimitiveBinding(t *testing.T) {
 	}
 }
 
+// DiTag injecting a concrete type (not the container) via makeByHints path.
+type DiTagConcreteService struct {
+	Config *ConfigService `di:""`
+}
+
+func TestEndUser_DiTag_InjectsConcreteType(t *testing.T) {
+	c := New()
+
+	svc := c.Make(&DiTagConcreteService{}).(*DiTagConcreteService)
+
+	if svc.Config == nil {
+		t.Fatal("Config should be injected via di tag")
+	}
+	if svc.Config.AppName != "MyApp" {
+		t.Errorf("Expected MyApp, got %s", svc.Config.AppName)
+	}
+}
+
+// DiTag injecting an interface type from the container.
+type DiTagInterfaceService struct {
+	UserSvc UserService `di:""`
+}
+
+func TestEndUser_DiTag_InjectsInterface(t *testing.T) {
+	c := New()
+	c.Bind((*UserService)(nil), func(a *App) interface{} {
+		return &MockUserService{Name: "DiInjected"}
+	})
+
+	svc := c.Make(&DiTagInterfaceService{}).(*DiTagInterfaceService)
+
+	if svc.UserSvc == nil {
+		t.Fatal("UserSvc should be injected via di tag")
+	}
+	if svc.UserSvc.GetUserName() != "DiInjected" {
+		t.Errorf("Expected DiInjected, got %s", svc.UserSvc.GetUserName())
+	}
+}
+
+// DiTag on a New-bearing type respects the zero-value guard (New set it → di skips).
+type DiTagNewPreservesValue struct {
+	Config *ConfigService `di:""`
+}
+
+var presetConfig = &ConfigService{AppName: "Preset"}
+
+func (d DiTagNewPreservesValue) New() *DiTagNewPreservesValue {
+	return &DiTagNewPreservesValue{Config: presetConfig}
+}
+
+func TestEndUser_DiTag_DoesNotOverwriteNewValue(t *testing.T) {
+	c := New()
+
+	svc := c.Make(&DiTagNewPreservesValue{}).(*DiTagNewPreservesValue)
+
+	if svc.Config != presetConfig {
+		t.Error("di tag should not overwrite value set by New()")
+	}
+}
+
+// DiTag on a New-bearing type injects when New left the field nil.
+type DiTagNewFillsNil struct {
+	Config *ConfigService `di:""`
+}
+
+func (d DiTagNewFillsNil) New() *DiTagNewFillsNil {
+	return &DiTagNewFillsNil{}
+}
+
+func TestEndUser_DiTag_FillsNilAfterNew(t *testing.T) {
+	c := New()
+
+	svc := c.Make(&DiTagNewFillsNil{}).(*DiTagNewFillsNil)
+
+	if svc.Config == nil {
+		t.Fatal("Config should be injected via di tag when New left it nil")
+	}
+	if svc.Config.AppName != "MyApp" {
+		t.Errorf("Expected MyApp, got %s", svc.Config.AppName)
+	}
+}
+
 func TestEndUser_DiTagWithStructBinding(t *testing.T) {
 	c := New()
 
