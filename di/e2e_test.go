@@ -1,7 +1,10 @@
 package di
 
 import (
+	"context"
+	"sync"
 	"testing"
+	"time"
 )
 
 type UserService interface {
@@ -704,5 +707,103 @@ func TestEndUser_DiTagWithStructBinding(t *testing.T) {
 	}
 	if controller.UserService == nil {
 		t.Error("UserService should be injected via inject tag")
+	}
+}
+
+type NilReturningStruct struct {
+	Name string `inject:"test"`
+}
+
+func (n NilReturningStruct) New() *NilReturningStruct {
+	return nil
+}
+
+func TestEndUser_NilPtrFromNew_DoesNotPanic(t *testing.T) {
+	c := New()
+	result := c.Make(&NilReturningStruct{})
+	if result != nil && result.(*NilReturningStruct) != nil {
+		// acceptable — just must not panic
+	}
+}
+
+func TestEndUser_NilPtrFromBindFunc_DoesNotPanic(t *testing.T) {
+	c := New()
+	c.Bind(&NilReturningStruct{}, func(a *App) interface{} {
+		return (*NilReturningStruct)(nil)
+	})
+	result := c.Make(&NilReturningStruct{})
+	if result != nil && result.(*NilReturningStruct) != nil {
+		// acceptable — just must not panic
+	}
+}
+
+type Context interface {
+	GetMessage() string
+	Reply(message string) string
+}
+
+type MessageHandlerFunc = func(Context)
+type ErrorsHandler func(err error)
+type DebugHandler func(format string, args ...any)
+type Middleware func(next HandlerFunc) HandlerFunc
+type HandlerFunc func(ctx context.Context, bot *Bot, update string)
+type MatchFunc func(update string) bool
+
+type handler struct {
+	f MessageHandlerFunc
+	i string
+}
+
+type Bot struct {
+	lastUpdateID int64
+
+	url                string
+	token              string
+	pollTimeout        time.Duration
+	skipGetMe          bool
+	webhookSecretToken string
+	testEnvironment    bool
+	workers            int
+	notAsyncHandlers   bool
+
+	defaultHandlerFunc HandlerFunc
+
+	errorsHandler ErrorsHandler
+	debugHandler  DebugHandler
+
+	middlewares []Middleware
+
+	handlersMx sync.RWMutex
+	handlers   []handler
+
+	isDebug          bool
+	checkInitTimeout time.Duration
+}
+
+type Config struct {
+	Client string
+	Secret string
+}
+
+type Engine struct {
+	bot      *Bot
+	cancel   context.CancelFunc
+	ctx      context.Context
+	handlers map[string][]handler
+	lock     *sync.RWMutex
+}
+
+func TestEndUser_MakePointerStruct(t *testing.T) {
+	c := New()
+
+	app.When((*Engine)(nil)).Needs((*Config)(nil)).Give(&Config{
+		Client: "CLIENT_ID",
+		Secret: "SECRET_STRING",
+	}).Singleton()
+
+	e := c.Make((*Engine)(nil)).(*Engine)
+
+	if e == nil {
+		t.Fatal("Expected Engine instance, got nil")
 	}
 }

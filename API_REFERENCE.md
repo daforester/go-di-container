@@ -143,12 +143,24 @@ Supported primitive types: bool, string, float32/64, int/int8/16/32/64, uint/8/1
 ### `di` tag
 ```go
 type MyStruct struct {
-    Container *di.App      `di:""`  // inject the container
-    App       di.AppInterface `di:""` // also works with the interface
+    // Resolved from the container — same as inject:"" but zero-value only
+    Service  MyInterface  `di:""`
+    Repo     *MyRepo      `di:""`
+
+    // Special case: field type is *App or AppInterface — injects the container itself
+    Container *di.App         `di:""`
+    App       di.AppInterface `di:""`
 }
 ```
-The `di` tag injects the container itself. Unlike `inject`, `di` tags only set the field
-if its value is zero (preserving values set by a `New()` constructor).
+The `di` tag resolves the field's type from the container. It is an alternative to
+listing the dependency as a `New()` parameter: the container calls `Make` on the field
+type and sets the result.
+
+**Special case:** when the field type is `*di.App` or `di.AppInterface`, the container
+instance itself is injected rather than resolved through the registry.
+
+**Zero-value guard:** unlike `inject`, `di` only sets a field when its current value is
+zero. This means values assigned by a `New()` constructor are preserved.
 
 ### Dual `di` + `inject` tags
 ```go
@@ -192,3 +204,7 @@ When resolving an `inject:""` tagged field, the container checks (in order):
 2. **When/Needs/Give** - contextual binding for this requesting type
 3. **inject value** - literal value from the tag (e.g., `inject:"42"`)
 4. **Auto-resolve** - recursive `Make` call for the field's type
+
+When resolving a `di:""` tagged field (only when the field is zero):
+1. **Container special case** - if the field type is `*App` or `AppInterface`, injects the container
+2. **Auto-resolve** - recursive `Make` call for the field's type

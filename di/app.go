@@ -792,7 +792,11 @@ func (A *App) processStructTags(a interface{}, injectables map[string]interface{
 	var val reflect.Value
 	switch ot.Kind() {
 	case reflect.Ptr:
-		val = reflect.ValueOf(a).Elem()
+		rv := reflect.ValueOf(a)
+		if rv.IsNil() {
+			return a
+		}
+		val = rv.Elem()
 	default:
 		v := reflect.New(t)
 		v.Elem().Set(reflect.ValueOf(a))

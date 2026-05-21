@@ -64,21 +64,40 @@ h := c.Make(&Handler{}).(*Handler)
 // h.DB is auto-resolved, h.Name == "my-handler"
 ```
 
-## Container Injection via `di` Tag
+## Dependency Injection via `di` Tag
+```go
+type OrderProcessor struct {
+    Repo    *OrderRepo  `di:""`  // resolved from container
+    Mailer  Mailer      `di:""`  // interface resolved from container
+}
+
+c.Bind((*Mailer)(nil), &SMTPMailer{})
+p := c.Make(&OrderProcessor{}).(*OrderProcessor)
+// p.Repo auto-constructed, p.Mailer is SMTPMailer
+```
+
+The `di` tag is an alternative to listing dependencies as `New()` parameters.
+It only fills zero-value fields, so values set by a `New()` constructor are preserved.
+
+## Container Self-Injection via `di` Tag
 ```go
 type MyService struct {
-    Container *di.App       `di:""`  // inject as concrete type
-    App       di.AppInterface `di:""` // inject as interface
+    Container *di.App         `di:""`  // inject as concrete type
+    App       di.AppInterface `di:""`  // inject as interface
 }
 
 svc := c.Make(&MyService{}).(*MyService)
 // svc.Container is the container that resolved it
 ```
+When the field type is `*di.App` or `di.AppInterface`, the container injects itself.
 
 ## Dual `di` + `inject` Tags
+When both tags are present, the `inject` value is used for primitive fields; `di`
+resolution applies for non-primitive fields (where an inject value would be meaningless).
+
 ```go
 type AppConfig struct {
-    Container *di.App `di:"" inject:""`     // non-primitive: container injected
+    Container *di.App `di:"" inject:""`     // non-primitive: di resolves (injects container)
     Port      int     `di:"" inject:"8080"` // primitive: inject value used
     Name      string  `di:"" inject:"app"`  // primitive: inject value used
 }

@@ -13,7 +13,7 @@ v1.1.0
 * **Singletons** - bind a shared instance that's returned on every resolve
 * **Named bindings & aliases** - register and resolve by string keys
 * **Struct tag injection** - `inject:""` auto-resolves dependencies, `inject:"value"` sets primitives
-* **Container injection** - `di:""` tag injects the container itself
+* **`di` tag injection** - `di:""` resolves the field's type from the container; injects the container itself when the field type is `*App` or `AppInterface`; only fills zero-value fields (preserves values set by `New()`)
 * **Dual tags** - fields with both `di` and `inject` tags use the inject value for primitives
 * **Contextual injection** - `When().Needs().Give()` overrides bindings per requesting type
 * **Per-call overrides** - `MakeWith()` provides field values at resolve time
@@ -57,12 +57,13 @@ func main() {
 
 ```go
 type Config struct {
-    Port    int          `inject:"8080"`      // primitive value injection
-    Host    string       `inject:"localhost"`  // string value injection
-    DB      Database     `inject:""`           // auto-resolve interface
-    Cache   *RedisCache  `inject:""`           // auto-resolve pointer
-    App     *di.App      `di:""`              // inject the container
-    Timeout int          `di:"" inject:"30"`  // dual: inject value for primitives
+    Port    int             `inject:"8080"`      // primitive value injection
+    Host    string          `inject:"localhost"`  // string value injection
+    DB      Database        `inject:""`           // auto-resolve interface
+    Cache   *RedisCache     `inject:""`           // auto-resolve pointer
+    App     *di.App         `di:""`               // inject the container (special case)
+    Svc     MyService       `di:""`               // resolve MyService from container
+    Timeout int             `di:"" inject:"30"`   // dual: inject value for primitives
 }
 ```
 
